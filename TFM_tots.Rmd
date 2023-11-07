@@ -1,0 +1,3106 @@
+---
+title: "1. Anàlisi de tots els accidents"
+author: "Anna Orteu"
+output: 
+  pdf_document:
+      toc: yes
+      toc_depth: '4'
+      number_sections: yes
+      latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r}
+#install.packages("e1071")
+#install.packages("ggplot2")
+#install.packages("gridExtra")
+#install.packages("plm")
+#install.packages("dplyr")
+#install.packages("MASS")
+#install.packages("WeightIt")
+#install.packages("cobalt")
+#install.packages("rpart")
+#install.packages("randomForest")
+#install.packages("caret")
+#install.packages("gplots")
+#install.packages("nnet")
+```
+
+```{r, warning = FALSE, include = FALSE}
+library(e1071)
+library(ggplot2)
+library(gridExtra)
+library(plm)
+library(dplyr)
+library(MASS)
+library(WeightIt)
+library(cobalt)
+library(rpart)
+library(randomForest)
+library(caret)
+library(gplots)
+library(nnet)
+```
+
+# Dades 
+
+```{r}
+#setwd("C:/Users/annap/OneDrive/Documents/paty/MESIO/Investigació/TFM")
+data<-read.csv("payd09_11_final_100.csv",header=T)
+```
+
+Es seleccionen només aquells individus que:
+
+- Han conduit 100 quilòmetres o més en el període de pre-tractament
+- No han declarat accidents en els períodes de pre i post tractament
+
+```{r}
+# Seleccionem les variables d'interès i les renombrem
+data0<-data[,c("ID","time","km_anuales","km_nocturnos","porc_toler","porc_vurba","Gr","Tr")]
+colnames(data0)<-c("ID", "Time","Total","Night","Speed","Urban","D","Tr")
+
+# Passem la variable Night de quilòmetres a percentatge
+data0$Night <- data0$Night/data0$Total*100
+data0[is.na(data0$Night), "Night"] <- 0 # Perquè hi ha registres amb 0 km_totals i la divisió per 0 dona NaN
+
+# Seleccionem les dades segons períodes
+data0_1<-data0[data0$Time==1,]
+data0_2<-data0[data0$Time==2,]
+```
+
+Les variables d'interès són doncs: 
+
+- "Quilòmetres totals" (Total)
+- "Percentatge de quilòmetres durant la nit" (Night)
+- "Percentatge de distància conduida per sobre de la velocitat" (Speed) 
+- "Percentatge de quilòmetres en àrees urbanes" (Urban)
+
+I en total compte amb `r length(unique(data0$ID))` assegurats. 
+
+# Estadístics
+
+De les quals a continuació prenem els seus descriptius en el pre i post període: 
+
+```{r, warning = FALSE}
+# Descriptive of telematics variables in t=1 and t=2
+# t=1
+Means<-colMeans(data0_1[,-c(1,2,7,8)])
+Variances<-diag(var(data0_1[,-c(1,2,7,8)]))
+Desviacion<-sqrt(Variances)
+Q<-apply(data0_1[,-c(1,2,7,8)],2,quantile)
+skew<-apply(data0_1[,-c(1,2,7,8)],2,skewness)
+kur<-apply(data0_1[,-c(1,2,7,8)],2,kurtosis)
+
+Estadisticos0_1<-rbind(Means,Desviacion,Q,skew,kur)
+rownames(Estadisticos0_1)<-c('Means','STD','Min','Q25','Median','Q75','Max',"Kurtosis","Skewness")
+# Estadisticos0_1
+knitr::kable(Estadisticos0_1,digits=4, caption="Telematics variables in pre-treatment period t=1")
+
+# t=2
+Means<-colMeans(data0_2[,-c(1,2,7,8)])
+Variances<-diag(var(data0_2[,-c(1,2,7,8)]))
+Desviacion<-sqrt(Variances)
+Q<-apply(data0_2[,-c(1,2,7,8)],2,quantile)
+skew<-apply(data0_2[,-c(1,2,7,8)],2,skewness)
+kur<-apply(data0_2[,-c(1,2,7,8)],2,kurtosis)
+
+Estadisticos0_2<-rbind(Means,Desviacion,Q,skew,kur)
+rownames(Estadisticos0_2)<-c('Means','STD','Min','Q25','Median','Q75','Max',"Kurtosis","Skewness")
+# Estadisticos0_2
+knitr::kable(Estadisticos0_2,digits=4, caption="Telematics variables in post-treatment period t=2")
+```
+
+A continuació imprimim les mitjanes pels dos grups (control i tractament) i pels dos períodes (pre i post)
+
+```{r, warning = FALSE}
+# Total km
+Means<-aggregate(Total~Time+D,data=data0,mean)
+Means<-as.data.frame(Means)
+Means$D=as.factor(Means$D)
+Means$Time=as.factor(Means$Time)
+p1<-ggplot(data=Means, aes(x=Time, y=Total, group=D)) +
+  geom_line(aes(linetype=D),size=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "Total yearly km", x = "Time")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+
+# Night km
+Means1<-aggregate(Night~Time+D,data=data0,mean)
+Means1<-as.data.frame(Means1)
+Means1$D=as.factor(Means1$D)
+Means1$Time=as.factor(Means1$Time)
+p2<-ggplot(data=Means1, aes(x=Time, y=Night, group=D)) +
+  geom_line(aes(linetype=D),size=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% night km", x = "Time")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+
+
+# % over-speed limit
+Means2<-aggregate(Speed~Time+D,data=data0,mean)
+Means2<-as.data.frame(Means2)
+Means2$D=as.factor(Means2$D)
+Means2$time=as.factor(Means2$Time)
+p3<-ggplot(data=Means2, aes(x=Time, y=Speed, group=D)) +
+  geom_line(aes(linetype=D),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% Over-speed limits", x = "Time")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+
+
+# % urban
+Means3<-aggregate(Urban~Time+D,data=data0,mean)
+Means3<-as.data.frame(Means3)
+Means3$D=as.factor(Means3$D)
+Means3$Time=as.factor(Means3$Time)
+p4<-ggplot(data=Means3, aes(x=Time, y=Urban, group=D)) +
+  geom_line(aes(linetype=D),size=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% Urban km", x = "Time")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+
+knitr::kable(list(Means, Means1),digits=4, caption="Means for pre and post-treatment periods by group")
+knitr::kable(list(Means2, Means3),digits=4, caption="Means for pre and post-treatment periods by group")
+```
+
+```{r, out.width="70%", fig.align = 'center'}
+grid.arrange(p1, p2, p3, p4, nrow=2)
+```
+
+Pel que fa a la variable "Speed", el seu gràfic té una fàcil interpretació. En tots dos cassos, tant si s'ha donat tractament com no el percentatge de quilòmetres recorreguts per sobre de la velocitat en el període de pre-tractament és major que en el post-tractament. Això pot ser degut a varis fenòmens, sent un dels principals, la introducció de varis radars en les vies urbanes. D'altra banda, la línia discontinua (amb tractament), es troba lleugerament inferior a la contínua, això indica que tal com esperat aquells individus que han patit algun accident, durant el següent any condueixen a menor velocitat, segurament degut a la por que han agafat al volant. 
+
+Pel que fa a la variable "Urban", altre cop totes dues línies tornen a disminuir. Tanmateix, Aquest cop la línia que fa referència als individus que han tingut algun accident disminueix en menor mesura, indicant que aquests prefereixen recuperar la confiança al volant conduint per vies urbanes, segurament degut a que aquestes són més lentes.
+
+Pel que fa a la variable "Night", totes dues línies tenen una tendència ascendent similar. Tanamateix, sí que es pot notar que la línia discontínua es troba en tot moment per sobre, indicant que clarament aquells que condueixen amb major freqüència durant la nit, tenen una probabilitat major de tenir algun accident. 
+
+Finalment la variable "Total" és la més díficil d'explicar en tenir un comportament contràri a l'esperat. En aquest es veu clarament que el fet d'haver tingut un accident dona lloc a realitzar més quilòmetres. El fet que la unitat de mesura siguin els quilòmetres i no un percentatge, per exemple, pot ser una de les raons d'aquesta extranya conclusió. 
+
+D'altra banda, també s'afegiran les següents covariables als models: 
+
+\begin{itemize}
+\item age$=$ edat de l'assegurat
+\item age35$=1$ si l'edat$\leq 35$ (primer quartil aproximadament), $=0$ altrament
+\item age\_lic$=$ edat de la llicència de conduir
+\item age\_lic15$=1$ si l'edat \_lic$\leq 15$ (primer quartil aproximadament), $=0$ altrament
+\item parking\_yes$=1$ si s'utilitza pàrquing durant la nit, $=0$ altrament
+\item woman$=1$ si l'assegurada és una dona, $=0$ altrament
+\item BMzones$=1$ si la zona de condució és Barcelona o Madrid, $=0$ altrament
+\item power100$=1$ si la potència del cotxe és $\leq 100$, $=0$ altrament
+\end{itemize}
+
+Les variables edat i anys de llicència s'han binaritzat a nivells que s'han considerat rellevants per a poder realitzar un anàlisi en funció de valors concrets. S'han provat altres quartils i talls, però aquest ha estat el més encertat. Així doncs, durant els models no s'utilitzaran les variables numèriques com a tal, sinó les seves corresponents categòriques. 
+
+En les següents taules s'imprimeixen els descriptius estadístics de les covariables. Com que s'observen canvis en els períodes de pre i post tractament, s'assumirà que són covariables canviants en el temps durant els models.
+
+Com a observació, fer notar que tenint en compte que sempre s'agafa l'edat a l'inscriure un primer registre i després es manté el mateix valor al llarg del temps, així com per la llicència de conduir, un es podria preguntar com és que les estadístiques d'aquestes variables poden canviar al llarg del temps. Així com la variable `woman`, ja que la única manera de canviar el sexe seria que la persona es fes pròpiament un canvi de sexe. Bé doncs, aquests cassos es donen generalment perquè es canvia el titular de la pòlissa, mantenint totes les altres característiques intactes. 
+
+```{r}
+# Covariates
+# Data with covariates:
+data1<-data0
+# age 
+data$Edad<-as.numeric((as.Date("2023-01-01")-as.Date(as.character(data$fec_con),format="%Y%m%d"))/365)
+data1$age<-data$Edad
+data1$age35<-as.numeric(data1$age<=35)
+
+# license age
+data$Ant_per<-as.numeric((as.Date("2023-01-01")-as.Date(as.character(data$fec_carne),format="%Y%m%d"))/365)
+
+data[is.na(data$Ant_per),c("Ant_per")]<-data[10308,c("Ant_per")]
+data1$lic_age<-data$Ant_per
+data1$lic_age15<-as.numeric(data1$lic_age<=15)
+# parking
+# table(data$garaje)
+
+data1$parking_yes<-1-(data$garaje=="V\xeda p\xfablica")
+
+# gender
+data1$woman<-as.numeric(data$sexo_con=="MUJER")
+# summary(data1$woman)
+
+# zone
+data1$BMzones<-as.numeric(data$zona=="MADRID")+as.numeric(data$zona=="BARCELONA")+
+              as.numeric(data$zona=="BARCELONA (CAT II 10/05/0")+
+              as.numeric(data$zona=="BARCELONA CAT II (05-04-0")
+# table(data1$BMzones)
+# summary(data1$BMzones)
+
+# power
+data1$power100<-as.numeric(data$potencia<=100)
+# summary(data1$power100)
+
+
+# Interactions with time=2
+data1$age_2<-data1$age*(data1$Time==2)
+data1$age35_2<-data1$age35*(data1$Time==2)
+data1$lic_age_2<-data1$lic_age*(data1$Time==2)
+data1$lic_age15_2<-data1$lic_age15*(data1$Time==2)
+data1$parking_yes2<-data1$parking_yes*(data1$Time==2)
+data1$woman_2<-data1$woman*(data1$Time==2)
+data1$BMzones_2<-data1$BMzones*(data1$Time==2)
+data1$power100_2<-data1$power100*(data1$Time==2)
+
+# Descriptive statistics of cavariates
+data1_1<-data1[data0$Time==1,]
+data1_2<-data1[data0$Time==2,]
+# t=1
+Means<-colMeans(data1_1[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")])
+Variances<-diag(var(data1_1[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")]))
+Desviacion<-sqrt(Variances)
+Q<-apply(data1_1[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")],2,quantile)
+skew<-apply(data1_1[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")],2,skewness)
+kur<-apply(data1_1[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")],2,kurtosis)
+
+Estadisticos1_1<-rbind(Means,Desviacion,Q,skew,kur)
+rownames(Estadisticos1_1)<-c('Means','STD','Min','Q25','Median','Q75','Max',"Kurtosis","Skewness")
+# Estadisticos1_1
+knitr::kable(Estadisticos1_1,digits=4, caption="Covariates in pre-treatment period t=1\\label{tab7}")
+
+# t=2
+Means<-colMeans(data1_2[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")])
+Variances<-diag(var(data1_2[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")]))
+Desviacion<-sqrt(Variances)
+Q<-apply(data1_2[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")],2,quantile)
+skew<-apply(data1_2[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")],2,skewness)
+kur<-apply(data1_2[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")],2,kurtosis)
+
+Estadisticos1_2<-rbind(Means,Desviacion,Q,skew,kur)
+rownames(Estadisticos1_2)<-c('Means','STD','Min','Q25','Median','Q75','Max',"Kurtosis","Skewness")
+# Estadisticos1_2
+knitr::kable(Estadisticos1_2,digits=4, caption="Covariates in post-treatment period t=2\\label{tab8}")
+```
+
+Tanmateix, varis dels mètodes amb que es treballa durant aquest projecte requereixen de covariables constants en el temps. Així doncs, es seleccionaran només aquells registres que tinguin aquestes covariables constants. 
+
+
+```{r}
+# Data with constant covariates:
+data1c<-data1[,-c(31:37)]
+
+# Agrupem per ID i ens quedem només amb aquelles files amb la mateixa edad, anys de llicència i woman (que de fet no haurien de canviar en cap cas). SI canvien és perquè s'ha canviat l'assegurat de la pòlissa --> passem de 12128 registres a 8510
+
+comptatge <- aggregate(data = data1c, age ~ ID, function(x) length(unique(x)))
+keep <- comptatge[comptatge$age ==1,]
+data1c <- data1c[data1c$ID %in% keep$ID,]
+
+comptatge <- aggregate(data = data1c, lic_age ~ ID, function(x) length(unique(x)))
+keep <- comptatge[comptatge$lic_age ==1,]
+data1c <- data1c[data1c$ID %in% keep$ID,]
+
+comptatge <- aggregate(data = data1c, woman ~ ID, function(x) length(unique(x)))
+keep <- comptatge[comptatge$woman ==1,]
+data1c <- data1c[data1c$ID %in% keep$ID,]
+
+# Eliminem també files que no siguin cst en el temps de les variables: parking_yes, BMzones, power100 --> passem de 8510 registres a 8150
+
+comptatge <- aggregate(data = data1c, parking_yes ~ ID, function(x) length(unique(x)))
+keep <- comptatge[comptatge$parking_yes ==1,]
+data1c <- data1c[data1c$ID %in% keep$ID,]
+
+comptatge <- aggregate(data = data1c, BMzones ~ ID, function(x) length(unique(x)))
+keep <- comptatge[comptatge$BMzones ==1,]
+data1c <- data1c[data1c$ID %in% keep$ID,]
+
+comptatge <- aggregate(data = data1c, power100 ~ ID, function(x) length(unique(x)))
+keep <- comptatge[comptatge$power100 ==1,]
+data1c <- data1c[data1c$ID %in% keep$ID,]
+
+# Descriptive statistics of covariates
+data1_1c<-data1c[data1c$Time==1,]
+data1_2c<-data1c[data1c$Time==2,]
+# t=1
+Means<-colMeans(data1_1c[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")])
+Variances<-diag(var(data1_1c[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")]))
+Desviacion<-sqrt(Variances)
+Q<-apply(data1_1c[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")],2,quantile)
+skew<-apply(data1_1c[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")],2,skewness)
+kur<-apply(data1_1c[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")],2,kurtosis)
+
+Estadisticos1_1c<-rbind(Means,Desviacion,Q,skew,kur)
+rownames(Estadisticos1_1c)<-c('Means','STD','Min','Q25','Median','Q75','Max',"Kurtosis","Skewness")
+# Estadisticos1_1c
+knitr::kable(Estadisticos1_1c,digits=4, caption="Covariates in pre-treatment period t=1")
+
+# t=2
+Means<-colMeans(data1_2c[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")])
+Variances<-diag(var(data1_2c[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")]))
+Desviacion<-sqrt(Variances)
+Q<-apply(data1_2c[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")],2,quantile)
+skew<-apply(data1_2c[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")],2,skewness)
+kur<-apply(data1_2c[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")],2,kurtosis)
+
+Estadisticos1_2c<-rbind(Means,Desviacion,Q,skew,kur)
+rownames(Estadisticos1_2c)<-c('Means','STD','Min','Q25','Median','Q75','Max',"Kurtosis","Skewness")
+# Estadisticos1_2c
+knitr::kable(Estadisticos1_2c,digits=4, caption="Covariates in post-treatment period t=2")
+```
+
+En aquest cas queden `r nrow(data1c)/2` assegurats al conjunt filtrat. 
+
+# Resultats de l'estimació Diff-in-Diff per a les reclamacions ATT
+
+## Models sense covariables
+
+### Models de regressió TWFE i OLS
+
+Estimem l'$ATT_2$ definit com:
+
+\begin{equation}
+ATT_2=E\left[Y_{i2}(1)-Y_{i2}(0)|D_i=1\right].\label{ATT}
+\end{equation}
+
+utilitzant els models de regressió TWFE i OLS sense covariables
+
+#### Variable Total
+
+```{r}
+# We estimate the two way fix effects (TWFE) model assuming parallel trend assumptions 
+# and basic assumption related with the properties of FE estimator.
+# For Total
+mod1_tot<-plm(Total~Tr,data=data0, index = c("ID","Time"),effect = c("twoways"),model = c("within"))
+R2<-var(predict(mod1_tot))/var(data0$Total)
+res<-cbind(summary(mod1_tot)$coefficients,R2)
+knitr::kable(res,digits=4, caption="TWFE for Total variable")
+```
+
+
+```{r}
+# If treatment are non conditionated to individuals shocks, then the model is a lm model 
+# with group, time and treatment effect
+mod1_tot_lm<-lm(Total~Time+D+Tr,data=data0)
+res<-summary(mod1_tot_lm)$coefficients
+knitr::kable(res,digits=4, caption="OLS for Total variable")
+```
+
+#### Variable Night
+
+```{r}
+# For Night
+mod1_nig<-plm(Night~Tr,data=data0, index = c("ID","Time"),effect = c("twoways"),model = c("within"))
+# attributes(summary(mod1_tot))
+R2<-var(predict(mod1_nig))/var(data0$Night)
+# mean(predict(mod1_tot))
+# mean(data0$Total)
+res<-cbind(summary(mod1_nig)$coefficients,R2)
+knitr::kable(res,digits=4, caption="TWFE for Night variable")
+
+# If treatment are non conditionated to individuals shocks, then the model is a lm model 
+# with group, time and treatment effect
+mod1_nig_lm<-lm(Night~Time+D+Tr,data=data0)
+# summary(mod1_tot_lm)
+res<-summary(mod1_nig_lm)$coefficients
+knitr::kable(res,digits=4, caption="OLS for Night variable")
+```
+
+#### Variable Speed
+
+```{r}
+# For Speed
+mod1_spe<-plm(Speed~Tr,data=data0, index = c("ID","Time"),effect = c("twoways"),model = c("within"))
+# attributes(summary(mod1_tot))
+R2<-var(predict(mod1_spe))/var(data0$Speed)
+# mean(predict(mod1_tot))
+# mean(data0$Total)
+res<-cbind(summary(mod1_spe)$coefficients,R2)
+knitr::kable(res,digits=4, caption="TWFE for Speed variable")
+
+# If treatment are non conditionated to individuals shocks, then the model is a lm model 
+# with group, time and treatment effect
+mod1_spe_lm<-lm(Speed~Time+D+Tr,data=data0)
+# summary(mod1_tot_lm)
+res<-summary(mod1_spe_lm)$coefficients
+knitr::kable(res,digits=4, caption="OLS for Speed variable")
+```
+
+#### Variable Urban
+
+```{r}
+# For Urban
+mod1_urb<-plm(Urban~Tr,data=data0, index = c("ID","Time"),effect = c("twoways"),model = c("within"))
+# attributes(summary(mod1_tot))
+R2<-var(predict(mod1_urb))/var(data0$Urban)
+# mean(predict(mod1_tot))
+# mean(data0$Total)
+res<-cbind(summary(mod1_urb)$coefficients,R2)
+knitr::kable(res,digits=4, caption="TWFE for Urban variable")
+
+# If treatment are non conditionated to individuals shocks, then the model is a lm model 
+# with group, time and treatment effect
+mod1_urb_lm<-lm(Urban~Time+D+Tr,data=data0)
+# summary(mod1_tot_lm)
+res<-summary(mod1_urb_lm)$coefficients
+knitr::kable(res,digits=4, caption="OLS for Urban variable")
+```
+
+Amb aquests primers resultats notem que l'efecte del tractament només és estadísticament significatiu per la variable `Total`, amb signe positiu. Això indica que extranyament, com més accidents es tenen, més quilòmetres s'acaben duen a terme durant el següent any després d'haver tingut l'accident. 
+
+Pel que fa a la interpretació dels models, fer notar que el coeficient `Time` pel cas en que es realitza el model amb OLS (per a `Total`), és igual a -1436.8631, perquè és el resultat de fer 3256.540 (T=2, D=0) - 4693.403 (T=1, D=0), que serien els dos primers valors de les taules que mostraven les mitjanes pels períodes de pre i post tractament, per grups. D'altra banda, el coeficient de `D`, 14.5883, prové de fer 4707.992 (T=1, D=1) - 4693.403 (T=1, D=0). Finalment, el coeficient de `Tr` prové de 4089.594 (T=2, D=1) - 3256.540 (T=2, D=1) + 14.5883.
+
+Tanmateix, en realitat se sap que el fet de tenir un accident no és completament aleatòri, sinó que és aleatòri, condicionat a unes característiques. Així doncs més endavant es realitzarà models similars però afegint covariables.
+
+### Estimació no paramètrica amb distribucions empíriques
+
+Aquest mètode és una generalització del Dif-in-Dif anomenat Changes-in-Changes. Com a fets rellevants, assumeix que les característiques no són observables, però que dins de cada grup (control i tractament), la distribució d'aquestes característiques no canvia al llarg del temps. És per aquest raó, que tot i no treballar amb covariables en aquest model, s'ha treballat amb el conjunt de dades reduit, el que mostra les covariables constants al llarg del temps. 
+
+Com a exercici extra en comparació als altres mètodes, s'ha decidit calcular també els quartils. 
+
+Els resultats mostren clarament que cap de les variables dependents dona lloc a un pvalor significatiu, raó per la qual no es pot dir res sobre aquests estimadors. Aquests resultats no sorprenen en haver detectat al llarg de tot el projecte que els estimadors no paramètrics o semi-paramètrics no són una bona opció per a aplicar a aquestes dades. Concretament, el problema està en que aquestes són massa desbalancejades, és a dir, existeixen molts més usuaris a la base de dades que no han tingut cap accident, que usuaris amb accidents, dificultant molt que models d'aquest tipologia puguin distinguir correctament. 
+
+```{r}
+# Funció que es queda amb els valors únics de x i els ordena de petit a gran
+supp <- function(x) {
+  y <- unique(x)
+  z <- sort(y)
+  return(z)
+}
+
+# Retorna un vector de freqüències pi d'igual llargada q YS. Calcula les proporcions mostrals d'Y en YS
+prob <- function(Y, YS) {
+  NYS <- length(YS) 
+  # Calculate the tolerance as the minimum of the difference between support points divided by 2
+  mdys <- min(abs(YS[-1] - YS[-NYS])) / 2
+  pi <- rep(0, NYS)
+  # Count the number of values at each support point
+  for (i in 1:NYS) {
+    pi[i] <- sum(abs(Y - YS[i]) < (mdys / 100))
+  }
+  # Convert counts to proportions by dividing by the total number of points
+  pi <- pi / sum(pi)
+}
+
+# Calculates the cumulative distribution function at a scalar value y for a discrete random variable with cumulative distribution function P at the support points
+cdf_cic <- function(y, P, YS) {
+  NS <- length(YS)
+  t <- 1:NS
+
+  if (y < min(YS)) {
+    FY <- 0
+  } else if (y >= max(YS)) {
+    FY <- 1
+  } else {
+    cc <- 0.00001
+    Y <- max(t[YS <= (y + cc)])
+    FY <- P[Y]
+  }
+
+  FY <- max(c(FY,0))
+  FY <- min(c(1, FY))
+
+  return(FY) # FY is the cumulative distribution function evaluated at y
+}
+
+# Calculates the inverse of a cumulative distribution function for a discrete random variable with cumulative distribution function equal to P at the support points YS, cc is a tolerance level set to avoid problems at the actual support points.
+cdfinv_cic <- function(y, P, YS) {
+  cc <- 0.000001
+  t <- 1:length(YS)
+  RANK <- min(t[P >= y - cc])
+  FINVY <- YS[RANK]
+  return(FINVY) # FINVY is the inverse of the empirical distribution of x evaluated at y
+}
+
+# Estimates a univariate density function using kernel methods. The kernel function is the Epanechnikov kernel. The bandwidth is the optimal bandwith based on Silverman's rule of thumb
+fden_cic <- function(y, Y) {
+  h <- 1.06 * sd(Y) * (length(Y) ^ (-1/5)) # Calculate the Silverman optimal bandwidth
+  # Calculate the kernel density using the Epanechnikov kernel
+  d <- (Y - y) / h
+  kd <- ifelse(abs(d) < sqrt(5), (1 - d^2 / 5) * (3 / (4 * sqrt(5))), 0)
+  # Estimate the density
+  fdensity <- mean(kd / h)
+  return(fdensity)
+}
+
+# Calcula estimador CIC continú
+cic_con <- function(f00, f01, f10, f11, qq, YS, YS01) {
+  
+  # Calculate cumulative distribution functions
+  F00 <- cumsum(f00)
+  F01 <- cumsum(f01)
+  F10 <- cumsum(f10)
+  F11 <- cumsum(f11)
+
+  # Initialize variables
+  ns01 <- length(YS01)
+  ZZ <- rep(0, ns01)
+  FCO <- ZZ
+
+  # Calculate FCO for each value of YS01
+  for (i in 1:ns01) {
+    y <- YS01[i]
+    F01y <- cdf_cic(y,F01,YS)
+    F00invF01y <- cdfinv_cic(F01y,F00,YS)
+    F10F00invF01y <- cdf_cic(F00invF01y,F10,YS)
+    FCO[i] <- F10F00invF01y
+  }
+
+  # Adjust estimates of the cdf's of Y^N_11
+  FCO[ns01] <- 1
+
+  # Continuous mean estimate
+  est <- t(F11 - c(0,F11[1:(length(YS)-1)]))%*%YS - t(FCO - c(0,FCO[1:(length(YS01)-1)]))%*%YS01
+
+  # Quantile estimates
+  Nq <- length(qq)
+  quantile_estimates <- rep(0,Nq)
+  for (i in 1:Nq) {
+    quantile_estimates[i] <- cdfinv_cic(qq[i],F11,YS)-cdfinv_cic(qq[i],FCO,YS01)
+  }
+
+  # Combine the continuous mean estimate and quantile estimates
+  est <- c(est, quantile_estimates)
+  return(est)
+}
+
+# standard error based on numerical differentiation in combination with the delta method. The estimator is a function of f00, f01, f10, f11.
+cic_con_se <- function(est, YS, Y00, Y01, Y10, Y11, f00, f01, f10, f11, YS10, YS01, YS00, YS11, NYS10,NYS11, NYS00, NYS01) {
+
+  # Calculate cumulative distribution functions and normalize them to one
+  F00 <- cumsum(f00) 
+  F01 <- cumsum(f01) 
+  F10 <- cumsum(f10) 
+  F11 <- cumsum(f11) 
+  F00 <- F00/F00[length(F00)]
+  F01 <- F01/F01[length(F01)]
+  F10 <- F10/F10[length(F10)]
+  F11 <- F11/F11[length(F11)]
+  
+  # Define a small tolerance
+  cc <- 0.00000001
+  
+  # Calculate F00_10 and F01invF00_10
+  F00_10 <- rep(0, NYS10)
+  F01invF00_10 <- rep(0, NYS10)
+  f01F01invF00_10 <- rep(0, NYS10)
+  
+  for (i in 1:NYS10) {
+    F00_10[i] <- cdf_cic(YS10[i],F00,YS)
+    F01invF00_10[i] <- cdfinv_cic(F00_10[i],F01,YS)
+    f01F01invF00_10[i] <- fden_cic(F01invF00_10[i],Y01) # El problema pot estar en aquesta funció
+  }
+  
+  # Contribution of Y00
+  P <- rep(0,NYS00)
+  for (i in 1:NYS00) {
+    PY00 <- ifelse(YS00[i] <= YS10, (1 - F00_10) / f01F01invF00_10, (0-F00_10) / f01F01invF00_10)
+    P[i] <- t(PY00)%*%f10[f10 > cc]
+  }
+  V00 <- sum(P * P * f00[f00 > cc]) / length(Y00)
+  
+  # Contribution of Y01
+  P <- rep(0,NYS01)
+  for (i in 1:NYS01) {
+    PY01 <- ifelse(cdf_cic(YS01[i],F01,YS) <= F00_10, (1 - F00_10) / f01F01invF00_10, (0 - F00_10) / f01F01invF00_10)
+    P[i] <- sum(PY01 * f10[f10 > cc])
+  }
+  V01 <- sum(P * P * f01[f01 > cc]) / length(Y01)
+  
+  # Contribution of Y10
+  P <- F01invF00_10 - sum(F01invF00_10 * f10[f10 > cc])
+  V10 <- sum(P * P * f10[f10 > cc]) / length(Y10)
+  
+  # Contribution of Y11
+  P <- YS11 - sum(YS * f11)
+  V11 <- sum(P * P * f11[f11 > cc]) / length(Y11)
+  
+  se_con <- sqrt(V00 + V01 + V10 + V11)
+  return(se_con)
+}
+
+# Calcula estimador CIC continu i errors estàndards analítics
+# Y01 outcomes control pre (Y00)
+# Y02 outcomes control post (Y01)
+# Y11 outcomes tract pre (Y10)
+# Y12 outcomes tract post (Y11)
+# qq vector de quantils pels quals es calcularà el quantile effect
+nonparam <- function(Y00,Y01,Y10,Y11,qq) {
+
+  # Manipulació previa de les dades
+  YS <- supp(c(Y00, Y01, Y10, Y11))  # Vector of distinct support points
+  NYS <- length(YS)                    # Number of support points
+  YS00 <- supp(Y00)                 # Distinct support points for Y00
+  NYS00 <- length(YS00)
+  YS01 <- supp(Y01)                 # Distinct support points for Y01
+  NYS01 <- length(YS01)
+  YS10 <- supp(Y10)                 # Distinct support points for Y10
+  NYS10 <- length(YS10)
+  YS11 <- supp(Y11)                 # Distinct support points for Y11
+  NYS11 <- length(YS11)
+  
+  f00 <- prob(Y00, YS)                # Vector of probabilities for Y00
+  f01 <- prob(Y01, YS)                # Vector of probabilities for Y01
+  f10 <- prob(Y10, YS)                # Vector of probabilities for Y10
+  f11 <- prob(Y11, YS)                # Vector of probabilities for Y11
+
+  # continuous estimate i se
+  est_con <- cic_con(f00,f01,f10,f11,qq,YS,YS01)
+  se_con <- cic_con_se(est, YS, Y00, Y01, Y10, Y11, f00, f01, f10, f11, YS10, YS01, YS00, YS11, NYS10,NYS11, NYS00, NYS01)
+  
+  # Inferència estadística
+  z_stat <- est_con[1] / se_con
+  # Two-tailed test
+  p_value <- 2 * (1 - pnorm(abs(z_stat)))  
+  z_critical <- qnorm((1 + 0.95) / 2)
+  CI_lower <- est_con[1] - z_critical * se_con
+  CI_upper <- est_con[1] + z_critical * se_con
+  # One-tailed test 
+  z_critical_o <- qnorm(1 - (1 - 0.95))
+  direction <- ifelse(est_con[1] >0, ">", "<")
+  if (direction == '>') {
+    p_value_o <- 1 - pnorm(z_stat)  
+    CI_lower_o <- est_con[1] - z_critical_o * se_con
+    CI_upper_o <- Inf # Positive infinity for greater than
+  } else {
+    p_value_o <- pnorm(z_stat) 
+    CI_lower_o <- -Inf  # Negative infinity for less than
+    CI_upper_o <- est_con[1] + z_critical_o * se_con
+  }
+  
+  return(list(ATT_2 = est_con[1], sd_ATT = se_con, z_stat = z_stat,
+              p_value = p_value, CI_lower = CI_lower, CI_upper = CI_upper,
+              p_value_o = p_value_o, CI_lower_o = CI_lower_o, CI_upper_o = CI_upper_o, 
+              quartils = est_con[2:length(est_con)]))
+}
+```
+
+#### Variable Total
+
+```{r}
+Y00 <- data1c[data1c$D == 0 & data1c$Time == 2,"Total"]
+Y01 <- data1c[data1c$D == 0 & data1c$Time == 2,"Total"]
+Y10 <- data1c[data1c$D == 1 & data1c$Time == 1,"Total"]
+Y11 <- data1c[data1c$D == 1 & data1c$Time == 1,"Total"]
+qq=c(0.25,0.5,0.75)
+
+res_total <- nonparam(Y00, Y01, Y10, Y11, qq)
+
+# Resultats: 
+res_cic_tot<-cbind(ATT_2 = c(res_total$ATT_2, res_total$ATT_2), sd = c(res_total$sd_ATT, res_total$sd_ATT), z_stat = c(res_total$z_stat, res_total$z_stat), p_value = c(res_total$p_value, res_total$p_value_o), CI_lower = c(res_total$CI_lower, res_total$CI_lower_o), CI_upper = c(res_total$CI_upper, res_total$CI_upper_o))
+rownames(res_cic_tot) <- c("2-tails", "1-tail")
+
+cat("Quartils", qq, ":", res_total$quartils)
+knitr::kable(res_cic_tot,digits=4, caption="Changes-in-changes for Total variable")
+```
+
+#### Variable Night
+
+```{r}
+Y00 <- data1c[data1c$D == 0 & data1c$Time == 2,"Night"]
+Y01 <- data1c[data1c$D == 0 & data1c$Time == 2,"Night"]
+Y10 <- data1c[data1c$D == 1 & data1c$Time == 1,"Night"]
+Y11 <- data1c[data1c$D == 1 & data1c$Time == 1,"Night"]
+qq=c(0.25,0.5,0.75)
+
+res_total <- nonparam(Y00, Y01, Y10, Y11, qq)
+
+# Resultats: 
+res_cic_nig<-cbind(ATT_2 = c(res_total$ATT_2, res_total$ATT_2), sd = c(res_total$sd_ATT, res_total$sd_ATT), z_stat = c(res_total$z_stat, res_total$z_stat), p_value = c(res_total$p_value, res_total$p_value_o), CI_lower = c(res_total$CI_lower, res_total$CI_lower_o), CI_upper = c(res_total$CI_upper, res_total$CI_upper_o))
+rownames(res_cic_nig) <- c("2-tails", "1-tail")
+
+cat("Quartils", qq, ":", res_total$quartils)
+knitr::kable(res_cic_nig,digits=4, caption="Changes-in-changes for Night variable")
+```
+
+#### Variable Speed
+
+```{r}
+Y00 <- data1c[data1c$D == 0 & data1c$Time == 2,"Speed"]
+Y01 <- data1c[data1c$D == 0 & data1c$Time == 2,"Speed"]
+Y10 <- data1c[data1c$D == 1 & data1c$Time == 1,"Speed"]
+Y11 <- data1c[data1c$D == 1 & data1c$Time == 1,"Speed"]
+qq=c(0.25,0.5,0.75)
+
+res_total <- nonparam(Y00, Y01, Y10, Y11, qq)
+
+# Resultats: 
+res_cic_spe<-cbind(ATT_2 = c(res_total$ATT_2, res_total$ATT_2), sd = c(res_total$sd_ATT, res_total$sd_ATT), z_stat = c(res_total$z_stat, res_total$z_stat), p_value = c(res_total$p_value, res_total$p_value_o), CI_lower = c(res_total$CI_lower, res_total$CI_lower_o), CI_upper = c(res_total$CI_upper, res_total$CI_upper_o))
+rownames(res_cic_spe) <- c("2-tails", "1-tail")
+
+cat("Quartils", qq, ":", res_total$quartils)
+knitr::kable(res_cic_spe,digits=4, caption="Changes-in-changes for Speed variable")
+```
+
+#### Variable Urban
+
+```{r}
+Y00 <- data1c[data1c$D == 0 & data1c$Time == 2,"Urban"]
+Y01 <- data1c[data1c$D == 0 & data1c$Time == 2,"Urban"]
+Y10 <- data1c[data1c$D == 1 & data1c$Time == 1,"Urban"]
+Y11 <- data1c[data1c$D == 1 & data1c$Time == 1,"Urban"]
+qq=c(0.25,0.5,0.75)
+
+res_total <- nonparam(Y00, Y01, Y10, Y11, qq)
+
+# Resultats: 
+res_cic_urb<-cbind(ATT_2 = c(res_total$ATT_2, res_total$ATT_2), sd = c(res_total$sd_ATT, res_total$sd_ATT), z_stat = c(res_total$z_stat, res_total$z_stat), p_value = c(res_total$p_value, res_total$p_value_o), CI_lower = c(res_total$CI_lower, res_total$CI_lower_o), CI_upper = c(res_total$CI_upper, res_total$CI_upper_o))
+rownames(res_cic_urb) <- c("2-tails", "1-tail")
+
+cat("Quartils", qq, ":", res_total$quartils)
+knitr::kable(res_cic_urb,digits=4, caption="Changes-in-changes for Urban variable")
+```
+
+
+## Models amb covariables canviants en el temps
+
+### Model TWFE
+
+Aquest model amb totes les covariables així com aquestes al temps t = 2 i canviant en el temps s'està referint a la següent formulació:
+
+\begin{equation}
+Y_{it}=\alpha_i+\delta_t+\tau \cdot Tr_{it}+\beta \cdot X_{it}\cdot I(t=2)+\gamma \cdot X_{it}\cdot Tr_{it}+\delta \cdot X_{it}+\epsilon_{it},
+\end{equation}
+
+#### Variable Total amb l'efecte de covariables
+
+En primer lloc creem el model amb tots els efectes additius i multiplicatius de les covariables. Es pot clarament observar que no tots els components del model són significatius en tenir pvalors molt superiors al 0.05 (agafant un nivell de confiança del 95%). Concretament, les interaccions creades entre les covariables i `Tr` semblen clarament ser no significatives. Així doncs, s'ha decidit seleccionar el millor model maximitzant l'R quadrat ajustat. El resultat del millor model mostra un valor estimat per $ATT_2$ positiu i significatiu al $0.09\%$. Aquesta millora s'ha hagut de fer manualment, el qual implica que sempre pot  haver-hi major tendència a errors. 
+
+
+```{r}
+# Estimate the model with covariate
+# For Total 
+mod2_tot<-plm(Total~Tr+age35+age35_2+lic_age15+lic_age15_2+parking_yes+parking_yes2+woman+woman_2+BMzones+BMzones_2+power100+power100_2+age35_2*Tr+lic_age15_2*Tr+parking_yes2*Tr+woman_2*Tr+BMzones_2*Tr+power100_2*Tr,data=data1, index = c("ID","Time"),effect = c("twoways"),model = c("within"))
+
+R2<-var(predict(mod2_tot))/var(data1$Total)
+R2Adj<-1-((var(residuals(mod2_tot))*(nrow(data1)-1)/(mod2_tot$df.residual))/var(data1$Total))
+res<-cbind(summary(mod2_tot)$coefficients,R2,R2Adj)
+knitr::kable(res,digits=4, caption="TWFE for Total variable with covariates")
+```
+
+```{r}
+mod2_tot<-plm(Total~Tr+lic_age15+parking_yes+parking_yes2+
+                woman+woman_2,data=data1, index = c("ID","Time"),effect = c("twoways"),model = c("within"))
+
+R2<-var(predict(mod2_tot))/var(data1$Total)
+R2Adj<-1-((var(residuals(mod2_tot))*(nrow(data1)-1)/(mod2_tot$df.residual))/var(data1$Total))
+#R2Adj2 <- 1 - (((1-R2)*(nrow(data1)-1))/(mod2_tot$df.residual))
+#R2Adj3 <- 1 - (((1-R2)*(nrow(data1)-1))/((nrow(data1)/2)-length(coef(mod2_tot))-1))
+
+res<-cbind(summary(mod2_tot)$coefficients,R2,R2Adj)
+knitr::kable(res,digits=4, caption="TWFE for Total variable with covariates")
+```
+
+
+Altrament, també hauríem pogut decidir agafar l'AIC com a criteri de selecció del millor model. Existeix una funció stepAIC() que selecciona el millor model donat el model complet. Tanmateix, aquesta requereix crear un model lineal (lm) com fet a continuació.
+
+Abans de crear el model, centrarem els valors de les variables, encara que les covariables siguin binàries, perquè així ho requereix el model. A més a més, com que s'han de centrar a 0 totes les covariables introduides, creem també una variable per a les interaccions que es volen introduir en el model. S'ha decidit centrar les variables, perquè aquest proccés dona lloc al mateix resultat que incloure variables fictícies (dummy) pels afectes fixos, però evita haver d'introduir tantes variables en el model amb les qual a vegades R no és ni capaç de tractar. A més a més, com més variables s'introdueixen en el model, major robustesa es perd. 
+
+
+```{r, include = FALSE}
+data1$age35_2_Tr <- data1$age35_2*data1$Tr
+data1$lic_age15_2_Tr <- data1$lic_age15_2*data1$Tr
+data1$parking_yes2_Tr <- data1$parking_yes2*data1$Tr
+data1$woman_2_Tr <- data1$woman_2*data1$Tr
+data1$BMzones_2_Tr <- data1$BMzones_2*data1$Tr
+data1$power100_2_Tr <- data1$power100_2*data1$Tr
+
+data1_ID <- aggregate(data1,by = list(data1$ID),FUN = mean)
+data1_ID<-data1_ID[,-c(1,3)] # treu "Group.1" (variable creada per la funció prèvia) i Time
+colnames(data1_ID)<-c("ID","TotalID", "NightID", "SpeedID", "UrbanID", "DID", "TrID", "ageID", "age35ID", "lic_ageID", "lic_age15ID", "parking_yesID", "womanID", "BMzonesID", "power100ID", "age_2ID", "age35_2ID", "lic_age_2ID", "lic_age15_2ID", "parking_yes2ID", "woman_2ID", "BMzones_2ID", "power100_2ID", "age35_2_TrID", "lic_age15_2_TrID", "parking_yes2_TrID", "woman_2_TrID", "BMzones_2_TrID", "power100_2_TrID")
+data1_tim <- aggregate(data1,by = list(data1$Time),FUN = mean)
+data1_tim<-data1_tim[,-c(1,2)]
+colnames(data1_tim)<-c("Time","Totalt", "Nightt", "Speedt", "Urbant", "Dt", "Trt", "aget", "age35t", "lic_aget", "lic_age15t", "parking_yest", "womant", "BMzonest", "power100t", "age_2t", "age35_2t", "lic_age_2t", "lic_age15_2t", "parking_yes2t", "woman_2t", "BMzones_2t", "power100_2t", "age35_2_Trt", "lic_age15_2_Trt", "parking_yes2_Trt", "woman_2_Trt", "BMzones_2_Trt", "power100_2_Trt")
+data1_final<-left_join(data1,data1_ID,by="ID")
+data1_final<-left_join(data1_final,data1_tim,by="Time")
+
+n <- nrow(data1)
+data1_centrades<-data1_final[,3:30]-data1_final[,31:58]-data1_final[,59:86]
+data1_timID <- t(replicate(n,colMeans(data1_final[,3:30])))
+data1_centrades<-data1_centrades+ data1_timID # Replica les mitjanes en totes les files
+colMeans(data1_centrades) # Comprovació de que totes les variables tenen mitjana 0
+```
+
+
+Com podem observar, els coeficients obtinguts són exactament iguals que els obtinguts amb la funció plm, sent les significacions d'aquests (pvalors) el que canvia de forma poc notòria. Així doncs, a partir d'ara es treballarà amb aquest model en ser més fàcil d'optimitzar. Així mateix, amb aquest tipus de model s'ha de tenir en compte que l'R quadrat ajustat fa referència a les variables centrades (transformades). Així doncs, s'ha de calcular altre cop aquesta mesura de forma manual per a obtenir un resultat fiable d'aquest ajust. Com a últim comentari sobre aquesta manera de construir el model, dir que el fet d'optimtizar, com es farà a continuació, de forma automàtica, pot implicar que la variable "Tr" s'elimini d'aquest. Això s'ha d'evitar en tot moment en ser el seu coeficient el que dona el valor de l'$ATT_2$. 
+
+
+```{r}
+mod2_tot_lm <- lm(Total ~ Tr + age35 + age35_2 + lic_age15 + lic_age15_2 + parking_yes + parking_yes2 + woman + woman_2 + BMzones + BMzones_2 + power100 + power100_2 + age35_2_Tr+ lic_age15_2_Tr + parking_yes2_Tr + woman_2_Tr  +BMzones_2_Tr+ power100_2_Tr -1 , data = data1_centrades)
+
+R2<-(var(predict(mod2_tot_lm) + data1_ID$TotalID + data1_tim$Totalt - data1_timID[,1]))/var(data1$Total) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_tot_lm))-1))
+res<-cbind(summary(mod2_tot_lm)$coefficients,R2,R2Adj, AIC = AIC(mod2_tot_lm))
+knitr::kable(res,digits=4, caption="TWFE for Total variable with covariates")
+```
+
+Com a resultat del millor model obtingut després de l'optimització prèviament esmentada, es conclou inicialment que és homogeni perquè no hi ha efectes interactius entre les variables. Pel que fa a l'efecte del tractament, $ATT_2$, aquest és positiu i significatiu, indicant que aquells usuaris que han tingut una accident passen a recòrrer més quilòmetres totals, després de tenir-lo, que aquells que no n'han tingut cap. 
+
+L'efecte de les variables a t=2 és la suma de la variable + variable_2. Així doncs, per exemple l'efecte de la variable parking_yes a t=2 és significativa i positiva. Això implica que aquells usuaris que tenen pàrquing, recorren més quilòmetres totals, el qual té molt sentit ja que generalment són aquells que tenen més diners i que per tant es poden permetre més gasolina i més quilòmetres. Tanmateix, la variable parking_yes2 en realitat mostra un efecte negatiu. Això indica que l'efecte entre t=1 i t=2 s'ha reduit, és a dir, que durant el primer període es recorrien molts més quilòmetres totals si es tenia pàrquing, mentre aquest efecte tot i que continua sent positiu, ha disminuit durant el segon període. 
+
+Contràriament, les dones recòrren menys quilòmetres totals que els homes, tot i que la diferència entre homes i dones es redueix durant el període de post-tractament. També recorren menys quilòmetres totals aquells que s'han tret el carnet fa menys de 15 anys. La variable `BMzones`, que recordem que és = 1 si la zona de conducció és Barcelona o Madrid i 0 altrament, també té un efecte negatiu a t=2 però aquest no és significatiu, tot i que millori l'explicació del model. 
+
+
+```{r}
+mod2_tot_lm_red <- stepAIC(mod2_tot_lm, trace = FALSE)
+
+R2<-(var(predict(mod2_tot_lm_red) + data1_ID$TotalID + data1_tim$Totalt - data1_timID[,1]))/var(data1$Total) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_tot_lm_red))-1))
+res<-cbind(summary(mod2_tot_lm_red)$coefficients,R2,R2Adj, AIC = AIC(mod2_tot_lm_red))
+knitr::kable(res,digits=4, caption="TWFE for Total variable with reduced covariates")
+```
+
+
+Només com a comprovació, fer notar que de fet l'R quadrat ajustat que haguèssim obtingut si haguèssim posat aquestes variables en el model plm és millor (major), indicant que utilitzar funcions és més fiables, raó per la qual a partir d'ara s'utilitzaran models lm per a aquest propòsit: 
+
+```{r}
+prova<-plm(Total~Tr+lic_age15+parking_yes+parking_yes2+woman+woman_2+BMzones+BMzones_2+power100,data=data1, index = c("ID","Time"),effect = c("twoways"),model = c("within"))
+
+R2<-var(predict(prova))/var(data1$Total)
+R2Adj<-1-((var(residuals(prova))*(n-1)/(prova$df.residual))/var(data1$Total))
+res<-cbind(summary(prova)$coefficients,R2,R2Adj)
+knitr::kable(res,digits=4, caption="TWFE for Total variable with covariates")
+```
+
+Com a analizi extra, s'ha volgut mirar quina variable és més important per a saber el nombre total de quilòmetres recorreguts d'un assegurat, l'edat o els anys que fa que pot conduir. El model deixant únicament la variable `lic_age15` és exactament el mateix que quan teníem totes dues variables, mentre al deixar únicament l'edat, aquesta ha "reemplaçat" el lloc de `lic_age15` en el model, en trobar exactament els mateixos coefficients i magnituds, amb significacions lleugerament diferents. No obstant això, tot i que la variable `age35` aparèix en el model aquesta és clarament no significativa, mentre la variable `lic_age15` sí que presentava un coefficient significatiu. Això indica que tot i que es necessita una mesura del temps en el model, els anys de llicència permeten aproximar amb més precisió els quilòmetres totals recorreguts pels assegurats. 
+
+```{r}
+mod2_tot_lm_age <- lm(Total ~ Tr + age35 + age35_2 + parking_yes + parking_yes2 + woman + woman_2 + BMzones + BMzones_2 + power100 + power100_2 + age35_2_Tr+ parking_yes2_Tr + woman_2_Tr  +BMzones_2_Tr+ power100_2_Tr -1 , data = data1_centrades)
+
+mod2_tot_lm_age_red <- stepAIC(mod2_tot_lm_age, trace = FALSE)
+
+R2<-(var(predict(mod2_tot_lm_age_red) + data1_ID$TotalID + data1_tim$Totalt - data1_timID[,1]))/var(data1$Total) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_tot_lm_age_red))-1))
+res<-cbind(summary(mod2_tot_lm_age_red)$coefficients,R2,R2Adj, AIC = AIC(mod2_tot_lm_age_red))
+knitr::kable(res,digits=4, caption="TWFE for Total variable with reduced covariates without lic_age15")
+```
+
+```{r}
+mod2_tot_lm_lic <- lm(Total ~ Tr + lic_age15 + lic_age15_2 + parking_yes + parking_yes2 + woman + woman_2 + BMzones + BMzones_2 + power100 + power100_2 + lic_age15_2_Tr+ parking_yes2_Tr + woman_2_Tr  +BMzones_2_Tr+ power100_2_Tr -1 , data = data1_centrades)
+
+mod2_tot_lm_lic_red <- stepAIC(mod2_tot_lm_lic, trace = FALSE)
+
+R2<-(var(predict(mod2_tot_lm_lic_red) + data1_ID$TotalID + data1_tim$Totalt - data1_timID[,1]))/var(data1$Total) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_tot_lm_lic_red))-1))
+res<-cbind(summary(mod2_tot_lm_lic_red)$coefficients,R2,R2Adj, AIC = AIC(mod2_tot_lm_lic_red))
+knitr::kable(res,digits=4, caption="TWFE for Total variable with reduced covariates without age35")
+```
+
+#### Variable Night amb l'efecte de covariables
+
+El model complet amb totes les covariables i interaccions possibles, així com la seva reducció dona lloc als següents resultats. En aquest cas s'ha obtingut un valor molt proper a 0 i no significatiu per l'$ATT_2$, indicant doncs que no implica cap diferència en el percentatge d'hores conduides durant la nit el fet d'haver patit un accident durant l'any anterior o no. Pel que fa als coeficients sense interaccions comentar que la variable `age35` presenta un efecte positiu. Això indica que els usuaris amb menys de 35 anys condueixen un percentatge de quilòmetres major durant la nit que els majors de 35 anys, tot i que aquest percentatge es redueix durant el segon període. També es pot observar que tenir pàrquing i conduir per Madrid o Barcelona augmenta aquest percentatge de conducció nocturna, mentre ser dona o tenir un cotxe amb baixa potència el disminueix. 
+
+D'altra banda, es nota que s'ha inclòs varies interaccions entre la covariables i la variable `Tr`. Per aquestes s'ha decidit calcular l'$ATT_2$ associat dels quals només el de la variable `power100` ha resultat ser significatiu amb una significació del $3,5\%$, mentre `lic_age15` i `parking_yes` presenten un pvalor superior al $5\%$ de significància. A més a més, el valor resultant ha estat rarament positiu. Això és degut, tal com veiem a la gràfica, que aquells que augmenten el percentatge de quilòmetres conduits durant la nit del primer al segon període són els usuaris que condueixen cotxes grans que no han tingut cap accident i els usuaris amb cotxes de baixa potència que han tingut algun accident. Mentre els altres dos tipus d'usuaris disminueixen el percentatge. És a dir, la diferència entre t=1 i t=2 disminueix pels usuaris que condueixen cotxes grans, independentment de si han tingut un accident o no, mentre aquesta augmenta pels usuaris que condueixen cotxes de baixa potència. 
+
+
+```{r}
+# For Night 
+#mod2_nig<-plm(Night~Tr+age35+age35_2+lic_age15+lic_age15_2+parking_yes+parking_yes2+woman+woman_2+BMzones+BMzones_2+power100+power100_2+age35_2*Tr+lic_age15_2*Tr+parking_yes2*Tr+woman_2*Tr+BMzones_2*Tr+power100_2*Tr,data=data1, index = c("ID","Time"),effect = c("twoways"),model = c("within"))
+
+#R2<-var(predict(mod2_nig))/var(data1$Night)
+#R2Adj<-1-((var(residuals(mod2_nig))*(nrow(data1)-1)/(mod2_nig$df.residual))/var(data1$Night))
+#res<-cbind(summary(mod2_nig)$coefficients,R2,R2Adj)
+#knitr::kable(res,digits=4, caption="TWFE for Night variable with covariates")
+```
+
+```{r}
+mod2_nig_lm <- lm(Night ~ Tr + age35 + age35_2 + lic_age15 + lic_age15_2 + parking_yes + parking_yes2 + woman + woman_2 + BMzones + BMzones_2 + power100 + power100_2 + age35_2_Tr+ lic_age15_2_Tr + parking_yes2_Tr + woman_2_Tr  +BMzones_2_Tr+ power100_2_Tr -1 , data = data1_centrades)
+
+R2<-(var(predict(mod2_nig_lm) + data1_ID$NightID + data1_tim$Nightt - data1_timID[,2]))/var(data1$Night) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_nig_lm))-1))
+res<-cbind(summary(mod2_nig_lm)$coefficients,R2,R2Adj, AIC = AIC(mod2_nig_lm))
+knitr::kable(res,digits=4, caption="TWFE for Night variable with covariates")
+```
+
+```{r}
+mod2_nig_lm_red <- stepAIC(mod2_nig_lm, trace = FALSE,
+                           scope = list(lower = formula("Night ~ Tr"),
+                                 upper = formula(mod2_nig_lm))) # L'scope és per forçar a que la variable Tr es mantingui en el model
+R2<-(var(predict(mod2_nig_lm_red) + data1_ID$NightID + data1_tim$Nightt - data1_timID[,2]))/var(data1$Night) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_nig_lm_red))-1))
+res<-cbind(summary(mod2_nig_lm_red)$coefficients,R2,R2Adj, AIC = AIC(mod2_nig_lm_red))
+knitr::kable(res,digits=4, caption="TWFE for Night variable with reduced covariates")
+```
+
+```{r}
+signif <- function(mod,r) {
+  coef <- as.matrix(coefficients(mod))
+  tau<-r%*%coef # tau
+  # Inference
+  covvar_beta<-as.matrix(vcov(mod))
+  var<-r%*%covvar_beta%*%t(t(r)) # var
+  Z<-tau/sqrt(var)
+  p_value<-1-pnorm(abs(tau/sqrt(var)))
+  res<-as.matrix(c(tau,Z,p_value))
+  rownames(res)<-c("coef","Z","p_value")
+  return(res)
+}
+
+# Suma els efectes de les variables. Si alguna no hi és en el model, és com si sumes 0.
+# lic_age15: 
+res_1 <- signif(mod2_nig_lm_red, c(1,0,0,0,0,0,0,0,1,0,0))
+# parking_yes: 
+res_2 <- signif(mod2_nig_lm_red, c(1,0,0,1,0,0,0,0,0,1,0))
+# power100:
+res_3 <- signif(mod2_nig_lm_red, c(1,0,0,0,0,0,0,1,0,0,1))
+
+# Imprimim els resultats: 
+res_effects<-cbind(res_1, res_2, res_3)
+colnames(res_effects)<-c("lic_age15", "parking_yes", "power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+
+```{r, out.width="70%", fig.align = 'center'}
+# power<=100
+Means<-aggregate(Night~Time+D+power100,data=data1,mean)
+Means<-as.data.frame(Means)
+
+Means$D=as.factor(Means$D)
+Means$time=as.factor(Means$Time)
+p3<-ggplot(data=Means[Means$power100 == 0,], aes(x=Time, y=Night, group=D)) +
+  geom_line(aes(linetype=D),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% night km", x = "Time", title = "Power>100")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+p4<-ggplot(data=Means[Means$power100 == 1,], aes(x=Time, y=Night, group=D)) +
+  geom_line(aes(linetype=D),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% night km", x = "Time", title = "Power<=100")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+
+grid.arrange(p3, p4,ncol=2)
+```
+
+
+A més a més, a continuació es mirarà què passaria si traièssim de l'últim model realitzat la variable `parking_yes` en ser aquesta una variable que sabem que no és gaire rellevant per a la nostra variable dependent i que podria afectar a que altres variables importants no surtissin significatives. Com es pot notar, en aquest cas `lic_age15` ha passat a ser significativa mentre `power100` ho ha deixat de ser. A l'analitzar la gràfica notem que tots els individus amb menys de 15 anys de llicència han reduit el percentatge de quilòmetres conduits durant la nit, mentre el comportament ha estat contràri pels usuaris amb més de 15 anys de carnet. A més a més, mentre la diferència en percentatge ha reduit del pre al post tractament pels usuaris amb menys de 15 anys de llicència, aquesta ha augmentat per la resta d'assegurats. No obstant això, l'AIC del model ha augmentat i l'$R^2_{Adj}$ ha disminuit respecte a l'últim model creat, indicant que el prèvi és millor, com esperat perquè sinó la funció stepAIC ja hauria eliminat la variable `parking_yes` ella mateixa.
+
+
+```{r}
+mod2_nig_lm_par <- lm(Night ~ Tr + age35 + age35_2 + woman + woman_2 + BMzones_2 + power100_2 + lic_age15_2_Tr + power100_2_Tr - 1, data = data1_centrades)
+
+R2<-(var(predict(mod2_nig_lm_par) + data1_ID$NightID + data1_tim$Nightt - data1_timID[,2]))/var(data1$Night) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_nig_lm_par))-1))
+res<-cbind(summary(mod2_nig_lm_par)$coefficients,R2,R2Adj, AIC = AIC(mod2_nig_lm_par))
+knitr::kable(res,digits=4, caption="TWFE for Night variable with reduced covariates without parking_yes")
+
+# lic_age15_2_Tr
+res_1 <- signif(mod2_nig_lm_par, as.vector(c(1,0,0,0,0,0,0,1,0)))
+# power100_2_Tr
+res_2 <- signif(mod2_nig_lm_par, as.vector(c(1,0,0,0,0,0,1,0,1)))
+
+res_effects<-cbind(res_1, res_2)
+colnames(res_effects)<-c("lic_age15","power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+```{r, out.width="70%", fig.align = 'center'}
+# lic_age <=15
+Means<-aggregate(Night~Time+D+lic_age15,data=data1,mean)
+Means<-as.data.frame(Means)
+
+Means$D=as.factor(Means$D)
+Means$time=as.factor(Means$Time)
+p1<-ggplot(data=Means[Means$lic_age15 == 0,], aes(x=Time, y=Night, group=D)) +
+  geom_line(aes(linetype=D),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% night km", x = "Time", title = "Lic age > 15")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+p2<-ggplot(data=Means[Means$lic_age15 == 1,], aes(x=Time, y=Night, group=D)) +
+  geom_line(aes(linetype=D),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% night km", x = "Time", title = "Lic age <= 15")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+
+grid.arrange(p1, p2,ncol=2)
+```
+
+
+A més a més, ens podríem plantejar el fet que l'edat i els anys de llicència són variables que aporten informació massa similar en quan a l'actitud o característiques de la persona i que per tant només 1 d'elles s'hauria de quedar en el model. Ja que de fet, en l'últim model provat han sortit com a significatives les variables que parlen sobre l'edat per elles mateixes, mentre eren els anys de llicència els que es trobaven relacionats amb `Tr`. En aquest cas, els resultats dels models amb i sense la variable pàrquing i quedant-nos amb la variable `age35` o `lic_age15` són els que es poden trobar a continuació. 
+
+Les observacions més rellevants extretes d'aquests models són que introduir la variable `parking_yes` en el model dona lloc a que l'$ATT_2$ de la variable `power100` sigui significatiu (o quasi significatiu pel cas en que va acompanyat de la variable anys de llicència) i positiu, mentre l'efecte del tractament tant de l'edat com dels anys de llicència són no significatius. Altrament, al treure la variable `parking_yes`, és la variable `power100` la que passa a tenir un efecte del tractament no significatiu, mentre `age35` i `lic_age15` donen lloc a un $ATT_2$ significatiu i negatiu. 
+
+També es conclou que si només es poguès disposar d'una de les dues variables per a predir el percentatge de quilòmetres nocturs que recorren els assegurats, es preferiria disposar de la variable edat en resultar els seus models en un AIC menor. 
+
+```{r}
+# Age i pàrquing
+mod2_nig_lm_age <- lm(Night ~ Tr + age35 + age35_2 +parking_yes + parking_yes2 + woman + woman_2 + BMzones + BMzones_2 + power100 + power100_2 + age35_2_Tr+ parking_yes2_Tr + woman_2_Tr  +BMzones_2_Tr+ power100_2_Tr -1 , data = data1_centrades)
+
+mod2_nig_lm_age_red <- stepAIC(mod2_nig_lm_age, trace = FALSE,
+                           scope = list(lower = formula("Night ~ Tr"),
+                                 upper = formula(mod2_nig_lm_age)))
+
+R2<-(var(predict(mod2_nig_lm_age_red) + data1_ID$NightID + data1_tim$Nightt - data1_timID[,2]))/var(data1$Night) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_nig_lm_age_red))-1))
+res<-cbind(summary(mod2_nig_lm_age_red)$coefficients,R2,R2Adj, AIC = AIC(mod2_nig_lm_age_red))
+knitr::kable(res,digits=4, caption="TWFE for Night variable with reduced covariates without lic_age15")
+
+# age35_2_Tr
+res_1 <- signif(mod2_nig_lm_age_red, as.vector(c(1,1,1,0,0,0,0,0,1,0,0)))
+# parking_yes2_Tr
+res_2 <- signif(mod2_nig_lm_age_red, as.vector(c(1,0,0,1,0,0,0,0,0,1,0)))
+# power100_2_Tr
+res_3 <- signif(mod2_nig_lm_age_red, as.vector(c(1,0,0,0,0,0,0,1,0,0,1)))
+
+res_effects<-cbind(res_1, res_2, res_3)
+colnames(res_effects)<-c("age35","parking_yes", "power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+```{r}
+# Age i no pàrquing
+mod2_nig_lm_age2 <- lm(Night ~ Tr + age35 + age35_2 + woman + woman_2 + BMzones + BMzones_2 + power100 + power100_2 + age35_2_Tr+ woman_2_Tr  +BMzones_2_Tr+ power100_2_Tr -1 , data = data1_centrades)
+
+mod2_nig_lm_age_red2 <- stepAIC(mod2_nig_lm_age2, trace = FALSE,
+                           scope = list(lower = formula("Night ~ Tr"),
+                                 upper = formula(mod2_nig_lm_age2)))
+
+R2<-(var(predict(mod2_nig_lm_age_red2) + data1_ID$NightID + data1_tim$Nightt - data1_timID[,2]))/var(data1$Night) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_nig_lm_age_red2))-1))
+res<-cbind(summary(mod2_nig_lm_age_red2)$coefficients,R2,R2Adj, AIC = AIC(mod2_nig_lm_age_red2))
+knitr::kable(res,digits=4, caption="TWFE for Night variable with reduced covariates without lic_age15 and parking_yes")
+
+# age35_2_Tr
+res_1 <- signif(mod2_nig_lm_age_red2, as.vector(c(1,1,1,0,0,0,0,1,0)))
+# power100_2_Tr
+res_2 <- signif(mod2_nig_lm_age_red2, as.vector(c(1,0,0,0,0,0,1,0,1)))
+
+res_effects<-cbind(res_1, res_2)
+colnames(res_effects)<-c("age35", "power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+```{r}
+# Anys llicència i pàrquing
+mod2_nig_lm_lic <- lm(Night ~ Tr + lic_age15 + lic_age15_2 + parking_yes + parking_yes2 + woman + woman_2 + BMzones + BMzones_2 + power100 + power100_2 + lic_age15_2_Tr + parking_yes2_Tr + woman_2_Tr  +BMzones_2_Tr+ power100_2_Tr -1 , data = data1_centrades)
+
+mod2_nig_lm_lic_red <- stepAIC(mod2_nig_lm_lic, trace = FALSE,
+                           scope = list(lower = formula("Night ~ Tr"),
+                                 upper = formula(mod2_nig_lm_lic)))
+
+R2<-(var(predict(mod2_nig_lm_lic_red) + data1_ID$NightID + data1_tim$Nightt - data1_timID[,2]))/var(data1$Night) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_nig_lm_lic_red))-1))
+res<-cbind(summary(mod2_nig_lm_lic_red)$coefficients,R2,R2Adj, AIC = AIC(mod2_nig_lm_lic_red))
+knitr::kable(res,digits=4, caption="TWFE for Night variable with reduced covariates without age35")
+
+# lic_age15_2_Tr
+res_1 <- signif(mod2_nig_lm_lic_red, as.vector(c(1,1,1,0,0,0,0,0,0,1,0,0)))
+# parking_yes2_Tr
+res_2 <- signif(mod2_nig_lm_lic_red, as.vector(c(1,0,0,1,1,0,0,0,0,0,1,0)))
+# power100_2_Tr
+res_3 <- signif(mod2_nig_lm_lic_red, as.vector(c(1,0,0,0,0,0,0,0,1,0,0,1)))
+
+res_effects<-cbind(res_1, res_2, res_3)
+colnames(res_effects)<-c("lic_age15","parking_yes", "power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+```{r}
+# Anys llicència i no pàrquing
+mod2_nig_lm_lic2 <- lm(Night ~ Tr + lic_age15 + lic_age15_2 +  woman + woman_2 + BMzones + BMzones_2 + power100 + power100_2 + lic_age15_2_Tr + woman_2_Tr  +BMzones_2_Tr+ power100_2_Tr -1 , data = data1_centrades)
+
+mod2_nig_lm_lic_red2 <- stepAIC(mod2_nig_lm_lic2, trace = FALSE,
+                           scope = list(lower = formula("Night ~ Tr"),
+                                 upper = formula(mod2_nig_lm_lic2)))
+
+R2<-(var(predict(mod2_nig_lm_lic_red2) + data1_ID$NightID + data1_tim$Nightt - data1_timID[,2]))/var(data1$Night) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_nig_lm_lic_red2))-1))
+res<-cbind(summary(mod2_nig_lm_lic_red2)$coefficients,R2,R2Adj, AIC = AIC(mod2_nig_lm_lic_red2))
+knitr::kable(res,digits=4, caption="TWFE for Night variable with reduced covariates without age35 and parking_yes")
+
+# lic_age15_2_Tr
+res_1 <- signif(mod2_nig_lm_lic_red2, as.vector(c(1,1,1,0,0,0,0,0,1,0)))
+# power100_2_Tr
+res_2 <- signif(mod2_nig_lm_lic_red2, as.vector(c(1,0,0,0,0,0,0,1,0,1)))
+
+res_effects<-cbind(res_1, res_2)
+colnames(res_effects)<-c("lic_age15", "power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+#### Variable Speed amb l'efecte de covariables
+
+Per a la variable dependent `Speed` s'observa un efecte del tractament negatiu però no significatiu. El signe es troba en consonància amb allò esperat, ja que aquells usuaris que han tingut un accident, s'espera que condueixin més lentament posteriorment a l'accident. Tanmateix, com comentat el pvalor d'aquest coeficient no és estadísticament significatiu, raó per la qual no es pot concloure res mirant aquests resultats. 
+
+Pel que fa als usuaris que tenen menys de 35 anys, aquests tenen un coeficient positiu i significatiu, indicant que condueixen a major velocitat que els usuaris de major edat. De fet, aquest coeficient passa a ser positiu gràcies a la variable `age35_2`. Això indica que a t=1 els usuaris joves sí que condueixen més lent, però a t=2 guanyen més confiança. A més a més, el coeficient dels usuaris que tenen el carnet des de fa menys de 15 anys és negatiu. Es pot concloure doncs que els joves són irresponsables al conduir ràpidament, però que sí que es mantenen amb major percentatge dins dels límits de velocitat, si fa poc que s'han tret el carnet.
+
+Tal com esperat, les dones trenquen menys els límits de velocitat, així com aquells usuaris que tenen cotxes petits. Conduir per Madrid o Barcelona també mostra un signe negatiu, segurament degut a la major presència de radars en aquestes ciutats. Si s'analitzen les interaccions que han sortit significatives es pot notar que tot i que aquestes milloren el model, totes elles mostren un $ATT_2$ no significatiu. Això indica que tenir un accident no impacta de cap manera significativa sobre la velocitat de conducció dels usuaris, independentment de les seves característiques. Tot i així, sí que cal recalcar el fet que han tornat a sortir les mateixes interaccions que sortien per a la variable dependent `Night`, (prenent `age35` i `lic_age15` com a variable similars, indicadores del temps). Això indica clarament quines són les covariables més rellevants. 
+
+
+```{r}
+# For Speed 
+#mod2_spe<-plm(Speed~Tr+age35+age35_2+lic_age15+lic_age15_2+parking_yes+parking_yes2+woman+woman_2+BMzones+BMzones_2+power100+power100_2+age35_2*Tr+lic_age15_2*Tr+parking_yes2*Tr+woman_2*Tr+BMzones_2*Tr+power100_2*Tr,data=data1, index = c("ID","Time"),effect = c("twoways"),model = c("within"))
+
+#R2<-var(predict(mod2_spe))/var(data1$Speed)
+#R2Adj<-1-((var(residuals(mod2_spe))*(nrow(data1)-1)/(mod2_spe$df.residual))/var(data1$Speed))
+#res<-cbind(summary(mod2_spe)$coefficients,R2,R2Adj)
+#knitr::kable(res,digits=4, caption="TWFE for Speed variable with covariates")
+```
+
+
+```{r}
+mod2_spe_lm <- lm(Speed ~ Tr + age35 + age35_2 + lic_age15 + lic_age15_2 + parking_yes + parking_yes2 + woman + woman_2 + BMzones + BMzones_2 + power100 + power100_2 + age35_2_Tr+ lic_age15_2_Tr + parking_yes2_Tr + woman_2_Tr  +BMzones_2_Tr+ power100_2_Tr -1 , data = data1_centrades)
+
+R2<-(var(predict(mod2_spe_lm) + data1_ID$SpeedID + data1_tim$Speedt - data1_timID[,3]))/var(data1$Speed) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_spe_lm))-1))
+res<-cbind(summary(mod2_spe_lm)$coefficients,R2,R2Adj, AIC = AIC(mod2_spe_lm))
+knitr::kable(res,digits=4, caption="TWFE for Speed variable with covariates")
+```
+
+```{r}
+mod2_spe_lm_red <- stepAIC(mod2_spe_lm, trace = FALSE, 
+                           scope = list(lower = formula("Speed ~ Tr"),
+                                 upper = formula(mod2_spe_lm))) # L'scope és per forçar a que la variable Tr es mantingui en el model
+R2<-(var(predict(mod2_spe_lm_red) + data1_ID$SpeedID + data1_tim$Speedt - data1_timID[,3]))/var(data1$Speed) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_spe_lm_red))-1))
+res<-cbind(summary(mod2_spe_lm_red)$coefficients,R2,R2Adj, AIC = AIC(mod2_spe_lm_red))
+knitr::kable(res,digits=4, caption="TWFE for Speed variable with reduced covariates")
+```
+
+```{r}
+# age<=35:
+res_1 <- signif(mod2_spe_lm_red, c(1,1,1,0,0,0,0,0,0,0,0,1,0,0))
+# parking_yes:
+res_2 <- signif(mod2_spe_lm_red, c(1,0,0,0,0,1,0,0,0,0,0,0,1,0))
+# power<=100:
+res_3 <- signif(mod2_spe_lm_red, c(1,0,0,0,0,0,0,0,0,1,1,0,0,1))
+
+# Imprimim els resultats: 
+res_effects<-cbind(res_1,res_2, res_3)
+colnames(res_effects)<-c("age<=35","parking_yes","power<=100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+
+Tot seguit, es decideix mirar altre cop què passaria si s'eliminès de l'últim model realitzat la variable `parking_yes` en ser aquesta una variable que no hauria de ser gaire rellevant per a la variable dependent estudiada i que podria afectar a que altres variables importants no surtissin significatives. 
+
+Com podem notar, aquest simple canvi de treure la variable `parking_yes` ha provocat que ara tant `age35` com `power100` mostrin $ATT_2$ significatius, tot i que l'AIC augmenti de forma lleugera.  Amb les gràfiques es pot notar clarament que els usuaris que han canviat més el seu comportament després de patir accidents són aquells que condueixen cotxes grans i que tenen menys de 35 anys.
+
+
+```{r}
+mod2_spe_lm_par <- lm(Speed ~ Tr + age35 + age35_2 + lic_age15 + lic_age15_2 + 
+    woman + BMzones + BMzones_2 + power100 + power100_2 + 
+    age35_2_Tr + power100_2_Tr - 1, data = data1_centrades)
+
+R2<-(var(predict(mod2_spe_lm_par) + data1_ID$SpeedID + data1_tim$Speedt - data1_timID[,3]))/var(data1$Speed) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_spe_lm_par))-1))
+res<-cbind(summary(mod2_spe_lm_par)$coefficients,R2,R2Adj, AIC = AIC(mod2_spe_lm_par))
+knitr::kable(res,digits=4, caption="TWFE for Speed variable with reduced covariates without parking_yes")
+
+# age35_2_Tr
+res_1 <- signif(mod2_spe_lm_par, as.vector(c(1,1,1,0,0,0,0,0,0,0,1,0)))
+# power100_2_Tr
+res_2 <- signif(mod2_spe_lm_par, as.vector(c(1,0,0,0,0,0,0,0,1,1,0,1)))
+
+res_effects<-cbind(res_1, res_2)
+colnames(res_effects)<-c("age35","power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+```{r, out.width="70%", fig.align = 'center'}
+# age<=35
+Means<-aggregate(Speed~Time+D+age35,data=data1,mean)
+Means<-as.data.frame(Means)
+
+Means$D=as.factor(Means$D)
+Means$time=as.factor(Means$Time)
+p1<-ggplot(data=Means[Means$age35 == 0,], aes(x=Time, y=Speed, group=D)) +
+  geom_line(aes(linetype=D),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% Over-speed limits", x = "Time", title = "Age>35")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+p2<-ggplot(data=Means[Means$age35 == 1,], aes(x=Time, y=Speed, group=D)) +
+  geom_line(aes(linetype=D),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% Over-speed limits", x = "Time", title = "Age<=35")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+
+# power<=100
+Means<-aggregate(Speed~Time+D+power100,data=data1,mean)
+Means<-as.data.frame(Means)
+Means$D=as.factor(Means$D)
+Means$time=as.factor(Means$Time)
+p3<-ggplot(data=Means[Means$power100 == 0,], aes(x=Time, y=Speed, group=D)) +
+  geom_line(aes(linetype=D),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% Over-speed limits", x = "Time", title = "Power>100")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+p4<-ggplot(data=Means[Means$power100 == 1,], aes(x=Time, y=Speed, group=D)) +
+  geom_line(aes(linetype=D),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% Over-speed limits", x = "Time", title = "Power<=100")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+
+# Grafiquem
+grid.arrange(p1, p2, p3, p4, nrow=2)
+```
+
+A més a més, tal com fet fins ara, es mirarà què passaria si es considerès dins del model només la variable edat o només els anys de llicència, en poder presentar aquestes dues variables multicolinearitat i no deixar entreveure altres resultats.
+
+En aquest cas les conclusions extretes d'aquestes combinacions de models són molt diferents respecte a les que s'han obtingut anteriorment amb la variable `Night`. Concretament, considerar la variable anys de llicència per al percentatge de quilòmetres recorreguts per sobre de la velocitat permesa no ajuda en no sortir aquesta interacció com a significativa en cap cas. D'altra banda, si s'introdueix la variable edat aquesta sempre surt significativa i amb un efecte del tractament negatiu, coincidint el signe en aquest cas sí amb els resultats que s'obtenien per `Night`. Finalment, la variable `power100` ha sortit significativa (o quasi significativa) amb un signe negatiu, a diferència del que s'obtenia per `Night`. 
+
+Això ens dur a concloure que l'edat de la persona és molt més rellevant que els anys de llicència d'aquesta pel que fa a predir la velocitat en funció de si l'usuari ha tingut un accident o no. A més a més, sabem que els usuaris amb menys de 35 anys que pateixen un accident redueixen la velocitat després de tenir-lo, així com aquells que tenen cotxes amb baixa potència. Aquesta última afirmació era contrària pel cas del percentatge de quilòmetres recorreguts nocturnament, en mostrar la variable `power100` un signe positiu de l'efecte del tractament, indicant doncs que les persones amb cotxes de baixa potència augmenten la diferència de quilòmetres recorreguts nocturnament de forma positiva, respecte als usuaris que no n'han tingut cap. 
+
+No obstant això, cal tenir en compte que l'$R^2_{Adj}$ és major per al model que elimina la variable edat i manté `lic_age15`. Així doncs, mentre si es vol analitzar què succeix després d'un accident disposar de la variable edat és millor. Si es vol predir amb major precisió el percentatge de quilòmetres per sobre de la velocitat dels assegurats, disposar dels anys de llicència és millor.
+
+
+```{r}
+# Age i pàrquing
+mod2_spe_lm_age <- lm(Speed ~ Tr + age35 + age35_2 +parking_yes + parking_yes2 + woman + woman_2 + BMzones + BMzones_2 + power100 + power100_2 + age35_2_Tr+ parking_yes2_Tr + woman_2_Tr  +BMzones_2_Tr+ power100_2_Tr -1 , data = data1_centrades)
+
+mod2_spe_lm_age_red <- stepAIC(mod2_spe_lm_age, trace = FALSE,
+                           scope = list(lower = formula("Speed ~ Tr"),
+                                 upper = formula(mod2_spe_lm_age)))
+
+R2<-(var(predict(mod2_spe_lm_age_red) + data1_ID$SpeedID + data1_tim$Speedt - data1_timID[,3]))/var(data1$Speed) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_spe_lm_age_red))-1))
+res<-cbind(summary(mod2_spe_lm_age_red)$coefficients,R2,R2Adj, AIC = AIC(mod2_spe_lm_age_red))
+knitr::kable(res,digits=4, caption="TWFE for Speed variable with reduced covariates without lic_age15")
+
+# age35_2_Tr
+res_1 <- signif(mod2_spe_lm_age_red, as.vector(c(1,1,1,0,0,0,0,0,0,1,0,0)))
+# parking_yes2_Tr
+res_2 <- signif(mod2_spe_lm_age_red, as.vector(c(1,0,0,1,0,0,0,0,0,0,1,0)))
+# power100_2_Tr
+res_3 <- signif(mod2_spe_lm_age_red, as.vector(c(1,0,0,0,0,0,0,1,1,0,0,1)))
+
+res_effects<-cbind(res_1, res_2, res_3)
+colnames(res_effects)<-c("age35","parking_yes", "power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+```{r}
+# Age i no pàrquing
+mod2_spe_lm_age2 <- lm(Speed ~ Tr + age35 + age35_2 + woman + woman_2 + BMzones + BMzones_2 + power100 + power100_2 + age35_2_Tr+ woman_2_Tr  +BMzones_2_Tr+ power100_2_Tr -1 , data = data1_centrades)
+
+mod2_spe_lm_age_red2 <- stepAIC(mod2_spe_lm_age2, trace = FALSE,
+                           scope = list(lower = formula("Speed ~ Tr"),
+                                 upper = formula(mod2_spe_lm_age2)))
+
+R2<-(var(predict(mod2_spe_lm_age_red2) + data1_ID$SpeedID + data1_tim$Speedt - data1_timID[,3]))/var(data1$Speed) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_spe_lm_age_red2))-1))
+res<-cbind(summary(mod2_spe_lm_age_red2)$coefficients,R2,R2Adj, AIC = AIC(mod2_spe_lm_age_red2))
+knitr::kable(res,digits=4, caption="TWFE for Speed variable with reduced covariates without lic_age15 and parking_yes")
+
+# age35_2_Tr
+res_1 <- signif(mod2_spe_lm_age_red2, as.vector(c(1,1,1,0,0,0,0,0,1,0)))
+# power100_2_Tr
+res_2 <- signif(mod2_spe_lm_age_red2, as.vector(c(1,0,0,0,0,0,1,1,0,1)))
+
+res_effects<-cbind(res_1, res_2)
+colnames(res_effects)<-c("age35", "power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+```{r}
+# Anys llicència i pàrquing
+mod2_spe_lm_lic <- lm(Speed ~ Tr + lic_age15 + lic_age15_2 + parking_yes + parking_yes2 + woman + woman_2 + BMzones + BMzones_2 + power100 + power100_2 + lic_age15_2_Tr + parking_yes2_Tr + woman_2_Tr  +BMzones_2_Tr+ power100_2_Tr -1 , data = data1_centrades)
+
+mod2_spe_lm_lic_red <- stepAIC(mod2_spe_lm_lic, trace = FALSE,
+                           scope = list(lower = formula("Speed ~ Tr"),
+                                 upper = formula(mod2_spe_lm_lic)))
+
+R2<-(var(predict(mod2_spe_lm_lic_red) + data1_ID$SpeedID + data1_tim$Speedt - data1_timID[,3]))/var(data1$Speed) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_spe_lm_lic_red))-1))
+res<-cbind(summary(mod2_spe_lm_lic_red)$coefficients,R2,R2Adj, AIC = AIC(mod2_spe_lm_lic_red))
+knitr::kable(res,digits=4, caption="TWFE for Speed variable with reduced covariates without age35")
+
+# parking_yes2_Tr
+res_2 <- signif(mod2_spe_lm_lic_red, as.vector(c(1,0,0,1,0,0,0,0,0,1,0)))
+# power100_2_Tr
+res_3 <- signif(mod2_spe_lm_lic_red, as.vector(c(1,0,0,0,0,0,0,1,1,0,1)))
+
+res_effects<-cbind(res_2, res_3)
+colnames(res_effects)<-c("parking_yes", "power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+```{r}
+# Anys llicència i no pàrquing
+mod2_spe_lm_lic2 <- lm(Speed ~ Tr + lic_age15 + lic_age15_2 +  woman + woman_2 + BMzones + BMzones_2 + power100 + power100_2 + lic_age15_2_Tr + woman_2_Tr  +BMzones_2_Tr+ power100_2_Tr -1 , data = data1_centrades)
+
+mod2_spe_lm_lic_red2 <- stepAIC(mod2_spe_lm_lic2, trace = FALSE,
+                           scope = list(lower = formula("Speed ~ Tr"),
+                                 upper = formula(mod2_spe_lm_lic2)))
+
+R2<-(var(predict(mod2_spe_lm_lic_red2) + data1_ID$SpeedID + data1_tim$Speedt - data1_timID[,3]))/var(data1$Speed) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_spe_lm_lic_red2))-1))
+res<-cbind(summary(mod2_spe_lm_lic_red2)$coefficients,R2,R2Adj, AIC = AIC(mod2_spe_lm_lic_red2))
+knitr::kable(res,digits=4, caption="TWFE for Speed variable with reduced covariates without age35 and parking_yes")
+
+# power100_2_Tr
+res_2 <- signif(mod2_spe_lm_lic_red2, as.vector(c(1,0,0,0,0,0,1,1,1)))
+
+res_effects<-cbind(res_2)
+colnames(res_effects)<-c("power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+
+#### Variable Urban amb l'efecte de covariables
+
+Tornem a trobar que algunes interaccions són significatives. D'altra banda, l'estimador de l'efecte del tractament és negatiu però no significatiu. Pel que fa a les variables sense interaccions podem veure que el fet de tenir menys de 35 anys implica conduir més per vies urbanes, així com tenir un cotxe petit, tot i que per tots dos factors aquest percentatge disminueix durant el període de post-tractament. Ser dona i conduir per Madrid o Barcelona implica conduir un percentatge menor per vies urbanes i finalment tenir la llicència fa menys de 15 anys, conduir-ne més per aquest tipus de via.
+
+No obstant això, si considerem les interaccions incloses en el model entre `Tr` i les covariables, podem observar com l'estimador de l'$ATT_2$ associat amb `lic_age15` i `power100` són significatius al $1\%$ i $0.3\%$, respectivament. A més a més, l'estimador associat amb les llicències joves és negatiu, volent dir que aquells usuaris que s'han tret el carnet fa poc, després de patir un accident preferixen conduir menys per vies urbanes, mentre els usuaris amb cotxes petits es troben més segurs conduint en aquestes condicions, en ser el seu estimador de signe positiu. Finalment pel que fa a les interaccions, comentar que tot i que la interacció entre la variable `woman` i `Tr` millora el model en quant a informació captada en relació a la quantitat d'informació considerada, al treure els estadístics particulars, aquesta és no significativa.
+
+Amb les gràfiques d'aquelles interaccions que han sortit significatives es pot veure que les persones amb llicència des de fa més de 15 anys condueixen sistemàticament menys quilòmetres per vies urbanes. Així mateix, aquells que no han tingut cap accident en condueixen cada cop menys. Pel que fa als usuaris amb menys de 15 anys de carnet el comportament és a l'inversa, en ser els que han tingut un accident els que passen a fer menys quilòmetres per vies urbanes, tal com comentat anteriorment quan s'analitzava el signe de l'efecte del tractament.
+
+Pel que fa a la potència dels cotxes, s'observa que els usuaris que han tingut un accident condueixen sempre més per vies urbanes, independentment de si el seu cotxe és gran o petit, indicant que segurament molts d'aquests accidents hauran estat en aquestes vies. Així mateix en aquest cas són els usuaris amb cotxes petits qui condueixen més per aquest tipus de vies. Finalment es nota que tenir un accident dona lloc a fer menys quilòmetres per vies urbanes en el cas de cotxes grans, mentre l'efecte no és tant significatiu sobre els petits.
+
+
+
+```{r}
+# For Urban
+#mod2_urb<-plm(Urban~Tr+age35+age35_2+lic_age15+lic_age15_2+parking_yes+parking_yes2+woman+woman_2+BMzones+BMzones_2+power100+power100_2+age35_2*Tr+lic_age15_2*Tr+parking_yes2*Tr+woman_2*Tr+BMzones_2*Tr+power100_2*Tr,data=data1, index = c("ID","Time"),effect = c("twoways"),model = c("within"))
+
+#R2<-var(predict(mod2_urb))/var(data1$Urban)
+#R2Adj<-1-((var(residuals(mod2_urb))*(nrow(data1)-1)/(mod2_urb$df.residual))/var(data1$Urban))
+#res<-cbind(summary(mod2_urb)$coefficients,R2,R2Adj)
+#knitr::kable(res,digits=4, caption="TWFE for Urban variable with covariates")
+```
+
+
+```{r}
+mod2_urb_lm <- lm(Urban ~ Tr + age35 + age35_2 + lic_age15 + lic_age15_2 + parking_yes + parking_yes2 + woman + woman_2 + BMzones + BMzones_2 + power100 + power100_2 + age35_2_Tr+ lic_age15_2_Tr + parking_yes2_Tr + woman_2_Tr  +BMzones_2_Tr+ power100_2_Tr -1 , data = data1_centrades)
+
+R2<-(var(predict(mod2_urb_lm) + data1_ID$UrbanID + data1_tim$Urbant - data1_timID[,4]))/var(data1$Urban) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_urb_lm))-1))
+res<-cbind(summary(mod2_urb_lm)$coefficients,R2,R2Adj, AIC = AIC(mod2_urb_lm))
+knitr::kable(res,digits=4, caption="TWFE for Urban variable with covariates")
+```
+
+
+```{r}
+mod2_urb_lm_red <- stepAIC(mod2_urb_lm, trace = FALSE, 
+                           scope = list(lower = formula("Urban ~ Tr"),
+                                 upper = formula(mod2_urb_lm))) # L'scope és per forçar a que la variable Tr es mantingui en el model
+R2<-(var(predict(mod2_urb_lm_red) + data1_ID$UrbanID + data1_tim$Urbant - data1_timID[,4]))/var(data1$Urban) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_urb_lm_red))-1))
+res<-cbind(summary(mod2_urb_lm_red)$coefficients,R2,R2Adj, AIC = AIC(mod2_urb_lm_red))
+knitr::kable(res,digits=4, caption="TWFE for Urban variable with reduced covariates")
+```
+
+
+```{r}
+# lic_age<=15:
+res_1 <- signif(mod2_urb_lm_red, c(1,0,0,1,0,0,0,0,1,0,0))
+# Woman:
+res_2 <- signif(mod2_urb_lm_red, c(1,0,0,0,1,0,0,0,0,1,0))
+# power<=100:
+res_3 <- signif(mod2_urb_lm_red, c(1,0,0,0,0,0,1,1,0,0,1))
+
+res_effects<-cbind(res_1,res_2,res_3)
+colnames(res_effects)<-c("lic_age<=15","woman","power<=100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+
+```{r, out.width="70%", fig.align = 'center'}
+# lic_age<=15
+Means<-aggregate(Urban~Time+D+lic_age15,data=data1,mean)
+Means<-as.data.frame(Means)
+
+Means$D=as.factor(Means$D)
+Means$time=as.factor(Means$Time)
+p1<-ggplot(data=Means[Means$lic_age15 == 0,], aes(x=Time, y=Urban, group=D)) +
+  geom_line(aes(linetype=D),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% Urban km", x = "Time", title = "Edat llicència > 15")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+p2<-ggplot(data=Means[Means$lic_age15 == 1,], aes(x=Time, y=Urban, group=D)) +
+  geom_line(aes(linetype=D),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% Urban km", x = "Time", title = "Edat llicència <= 15")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+
+# power<=100
+Means<-aggregate(Urban~Time+D+power100,data=data1,mean)
+Means<-as.data.frame(Means)
+
+Means$D=as.factor(Means$D)
+Means$time=as.factor(Means$Time)
+p3<-ggplot(data=Means[Means$power100 == 0,], aes(x=Time, y=Urban, group=D)) +
+  geom_line(aes(linetype=D),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% Urban km", x = "Time", title = "Power>100")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+p4<-ggplot(data=Means[Means$power100 == 1,], aes(x=Time, y=Urban, group=D)) +
+  geom_line(aes(linetype=D),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% Urban km", x = "Time", title = "Power<=100")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+
+# Grafiquem
+grid.arrange(p1, p2, p3, p4, nrow=2)
+```
+
+Tal com fet amb la resta de models, es mirarà altre cop què passaria si només considerèssim la variable `age35` o `lic_age15`, però no totes dues a la vegada, en els models. En aquest cas no s'ha hagut de crear 4 models (considerant a més a més introduir o no la variable `parking_yes`), perquè aquesta era no significant en tots els cassos, indicant que no té res a veure amb la quantitat de conducció urbana que realitzen els ciutadans. 
+
+Les conclusions són que independentment de si es posa la variable edat o anys de llicència, totes dues mostren un efecte del tractament significatiu (o quasi pel cas d'`age35`) i negatiu, mentre la potència també surt en tot cas significativa i positiva, com passava en el cas de la variable `Night`. 
+
+A més a més, si s'analitzen els $R^{2}_{Adj}$ o els AIC es pot notar que introduir els anys de llicència és més informatiu que introduir l'edat. Tot i així, el millor model continua sent el creat anteriorment, que considera totes dues informacions a la vegada.
+
+Després d'haver analitzat tots els models d'aquesta secció i de tenir en compte els AIC's es pot concloure que poseir la variable edat és el millor si es vol predir el percentatge de quilòmetres que es recorreran de forma nocturna, mentre per a les altres 3 variables dependents aporta més informació els anys de carnet. Òbviament, en tots els cassos el millor és disposar de totes dues informacions. 
+
+```{r}
+# Age
+mod2_urb_lm_age <- lm(Urban ~ Tr + age35 + age35_2 +parking_yes + parking_yes2 + woman + woman_2 + BMzones + BMzones_2 + power100 + power100_2 + age35_2_Tr+ parking_yes2_Tr + woman_2_Tr  +BMzones_2_Tr+ power100_2_Tr -1 , data = data1_centrades)
+
+mod2_urb_lm_age_red <- stepAIC(mod2_urb_lm_age, trace = FALSE,
+                           scope = list(lower = formula("Urban ~ Tr"),
+                                 upper = formula(mod2_urb_lm_age)))
+
+R2<-(var(predict(mod2_urb_lm_age_red) + data1_ID$UrbanID + data1_tim$Urbant - data1_timID[,4]))/var(data1$Urban) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_urb_lm_age_red))-1))
+res<-cbind(summary(mod2_urb_lm_age_red)$coefficients,R2,R2Adj, AIC = AIC(mod2_urb_lm_age_red))
+knitr::kable(res,digits=4, caption="TWFE for Urban variable with reduced covariates without lic_age15")
+
+# age35_2_Tr
+res_1 <- signif(mod2_urb_lm_age_red, as.vector(c(1,1,1,0,0,0,0,1,0,0)))
+# woman_2_Tr
+res_2 <- signif(mod2_urb_lm_age_red, as.vector(c(1,0,0,0,0,0,0,0,1,0)))
+# power100_2_Tr
+res_3 <- signif(mod2_urb_lm_age_red, as.vector(c(1,0,0,0,0,1,1,0,0,1)))
+
+res_effects<-cbind(res_1, res_2, res_3)
+colnames(res_effects)<-c("age35","woman", "power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+
+```{r}
+# Anys llicència
+mod2_urb_lm_lic <- lm(Urban ~ Tr + lic_age15 + lic_age15_2 + parking_yes + parking_yes2 + woman + woman_2 + BMzones + BMzones_2 + power100 + power100_2 + lic_age15_2_Tr + parking_yes2_Tr + woman_2_Tr  +BMzones_2_Tr+ power100_2_Tr -1 , data = data1_centrades)
+
+mod2_urb_lm_lic_red <- stepAIC(mod2_urb_lm_lic, trace = FALSE,
+                           scope = list(lower = formula("Urban ~ Tr"),
+                                 upper = formula(mod2_urb_lm_lic)))
+
+R2<-(var(predict(mod2_urb_lm_lic_red) + data1_ID$UrbanID + data1_tim$Urbant - data1_timID[,4]))/var(data1$Urban) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_urb_lm_lic_red))-1))
+res<-cbind(summary(mod2_urb_lm_lic_red)$coefficients,R2,R2Adj, AIC = AIC(mod2_urb_lm_lic_red))
+knitr::kable(res,digits=4, caption="TWFE for Urban variable with reduced covariates without age35")
+
+# lic_age15_2_Tr
+res_1 <- signif(mod2_urb_lm_lic_red, as.vector(c(1,1,0,0,0,0,1,0,0)))
+# woman_2_Tr
+res_2 <- signif(mod2_urb_lm_lic_red, as.vector(c(1,0,1,0,0,0,0,1,0)))
+# power100_2_Tr
+res_3 <- signif(mod2_urb_lm_lic_red, as.vector(c(1,0,0,0,1,1,0,0,1)))
+
+res_effects<-cbind(res_1, res_2, res_3)
+colnames(res_effects)<-c("lic_age15","woman", "power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+### Model semi-paramètric  - Integració de propensity scores amb models Dif-in-Dif
+
+L'estimador utilitza puntuacions de propensió per predir les probabilitats que cada observació estigui en cadascun dels quatre grups (control pre-tractament / control post-tractament / tractament pre-tractament / tractament post-tractament). Concretament, normalment s'utilitza algun tipus de regressió multinomial. L'efecte del tractament es calcula doncs com una mitjana ponderada dels resultats observats. Destacar també que en aquest cas per a calcular la variància de l'estimador i posteriorment poder fer inferència s'ha utilitzat el mètode delta. Així doncs, l'estimador de la variància en realitat és una aproximació. 
+
+Els resultats, a l'igual que per l'anterior mètode no paramètric donen en tot cas no significatius. Concretament, la variable `Total` sempre és la que mostra un pvalor més petit, mentre les altres tres variables dependents mostren pvalors molt propers a l'1 si es mira el resultat a 2 cues, interpretant doncs que no s'està captant absolutament cap informació rellevant de les dades. Com en tot cas, efectivament fer inferència a 1 cua fa reduir el pvalor a la meitat. 
+
+```{r, include = FALSE}
+# Assignem a cada observació el seu grup k:
+data1$k <- ifelse(data1$D == 1 & data1$Time == 1, 1, ifelse(data1$D == 1 & data1$Time == 2, 2, ifelse(data1$D == 0 & data1$Time == 1, 3, ifelse(data1$D == 0 & data1$Time == 2,4,"NA"))))
+data1$k <- as.factor(data1$k)
+
+# Calculem la probabilitat d'estar en el grup, per k = 1, 2, 3 i 4 = e_k(x_i) = propensity scores amb multinomial logistic regression
+multi_tot <- multinom(k ~ age35+lic_age15+parking_yes+BMzones+power100+woman, data = data1)
+predicted_probs <- predict(multi_tot, newdata = data1, type = "probs")
+data1$e_1 <- predicted_probs[,1]
+data1$e_2 <- predicted_probs[,2]
+data1$e_3 <- predicted_probs[,3]
+data1$e_4 <- predicted_probs[,4]
+
+# Calculem els pesos w_i
+data1$e_g <- ifelse(data1$k == 1, data1$e_1, ifelse(data1$k == 2,data1$e_2, ifelse(data1$k == 3,data1$e_3, data1$e_4)))
+data1$w <- data1$e_1/data1$e_g
+```
+
+```{r}
+semi_param_scores <- function(data1, var_dependent) {
+  # Compute consistent estimators
+  u_1 <- (sum((data1$k == 1)*data1[,var_dependent]*data1$w))/(sum((data1$k == 1)*data1$w))
+  u_2 <- (sum((data1$k == 2)*data1[,var_dependent]*data1$w))/(sum((data1$k == 2)*data1$w))
+  u_3 <- (sum((data1$k == 3)*data1[,var_dependent]*data1$w))/(sum((data1$k == 3)*data1$w))
+  u_4 <- (sum((data1$k == 4)*data1[,var_dependent]*data1$w))/(sum((data1$k == 4)*data1$w))
+  
+  # ATT_2
+  att_scores <- u_2 - u_1 - (u_4 - u_3)
+  
+  # Calculem variància d'ATT_2 amb el delta method --> technique for estimating the variance of a nonlinear function of random variables
+  var_u_1 <- var((data1$k == 1) * data1[,var_dependent] * data1$w)
+  var_u_2 <- var((data1$k == 2) * data1[,var_dependent] * data1$w)
+  var_u_3 <- var((data1$k == 3) * data1[,var_dependent] * data1$w)
+  var_u_4 <- var((data1$k == 4) * data1[,var_dependent] * data1$w)
+  
+  cov_u1_u2 <- cov((data1$k == 1) * data1[,var_dependent] * data1$w, (data1$k == 2) * data1[,var_dependent] * data1$w)
+  cov_u3_u4 <- cov((data1$k == 3) * data1[,var_dependent] * data1$w, (data1$k == 4) * data1[,var_dependent] * data1$w)
+  
+  datt_2_du1 <- -1
+  datt_2_du2 <- 1
+  datt_2_du3 <- 1
+  datt_2_du4 <- -1
+  
+  var_att_scores <- (datt_2_du1^2) * var_u_1 +
+                       (datt_2_du2^2) * var_u_2 +
+                       (datt_2_du3^2) * var_u_3 +
+                       (datt_2_du4^2) * var_u_4 +
+                       2 * datt_2_du1 * datt_2_du2 * cov_u1_u2 +
+                       2 * datt_2_du3 * datt_2_du4 * cov_u3_u4
+  sd_att_scores <- sqrt(var_att_scores)
+  
+  z_stat <- att_scores / sd_att_scores
+  
+  # Two-tailed test
+  p_value <- 2 * (1 - pnorm(abs(z_stat)))  
+  z_critical <- qnorm((1 + 0.95) / 2)
+  CI_lower <- att_scores - z_critical * sd_att_scores
+  CI_upper <- att_scores + z_critical * sd_att_scores
+  # One-tailed test 
+  z_critical_o <- qnorm(1 - (1 - 0.95))
+  direction <- ifelse(att_scores >0, ">", "<")
+  if (direction == '>') {
+    p_value_o <- 1 - pnorm(z_stat)  
+    CI_lower_o <- att_scores - z_critical_o * sd_att_scores
+    CI_upper_o <- Inf # Positive infinity for greater than
+  } else {
+    p_value_o <- pnorm(z_stat) 
+    CI_lower_o <- -Inf  # Negative infinity for less than
+    CI_upper_o <- att_scores + z_critical_o * sd_att_scores
+  }
+  return(list(ATT_2 = att_scores, sd_ATT = sd_att_scores, z_stat = z_stat,
+              p_value = p_value, CI_lower = CI_lower, CI_upper = CI_upper,
+              p_value_o = p_value_o, CI_lower_o = CI_lower_o, CI_upper_o = CI_upper_o))
+}
+```
+
+#### Variable Total amb l'efecte de covariables
+
+```{r}
+scores <- semi_param_scores(data1, "Total")
+
+# Resultats: 
+res_scores_tot<-cbind(ATT_2 = c(scores$ATT_2, scores$ATT_2), sd = c(scores$sd_ATT, scores$sd_ATT), z_stat = c(scores$z_stat, scores$z_stat), p_value = c(scores$p_value, scores$p_value_o), CI_lower = c(scores$CI_lower, scores$CI_lower_o), CI_upper = c(scores$CI_upper, scores$CI_upper_o))
+
+rownames(res_scores_tot) <- c("2-tails", "1-tail")
+
+knitr::kable(res_scores_tot,digits=4, caption="Propensity scores + DD for Total variable")
+```
+
+#### Variable Night amb l'efecte de covariables
+
+```{r}
+scores <- semi_param_scores(data1, "Night")
+
+# Resultats: 
+res_scores_nig<-cbind(ATT_2 = c(scores$ATT_2, scores$ATT_2), sd = c(scores$sd_ATT, scores$sd_ATT), z_stat = c(scores$z_stat, scores$z_stat), p_value = c(scores$p_value, scores$p_value_o), CI_lower = c(scores$CI_lower, scores$CI_lower_o), CI_upper = c(scores$CI_upper, scores$CI_upper_o))
+rownames(res_scores_nig) <- c("2-tails", "1-tail")
+
+knitr::kable(res_scores_nig,digits=4, caption="Propensity scores + DD for Night variable")
+```
+
+#### Variable Speed amb l'efecte de covariables
+
+```{r}
+scores <- semi_param_scores(data1, "Speed")
+
+# Resultats: 
+res_scores_spe<-cbind(ATT_2 = c(scores$ATT_2, scores$ATT_2), sd = c(scores$sd_ATT, scores$sd_ATT), z_stat = c(scores$z_stat, scores$z_stat), p_value = c(scores$p_value, scores$p_value_o), CI_lower = c(scores$CI_lower, scores$CI_lower_o), CI_upper = c(scores$CI_upper, scores$CI_upper_o))
+rownames(res_scores_spe) <- c("2-tails", "1-tail")
+
+knitr::kable(res_scores_spe,digits=4, caption="Propensity scores + DD for Speed variable")
+```
+
+#### Variable Urban amb l'efecte de covariables
+
+```{r}
+scores <- semi_param_scores(data1, "Urban")
+
+# Resultats: 
+res_scores_urb<-cbind(ATT_2 = c(scores$ATT_2, scores$ATT_2), sd = c(scores$sd_ATT, scores$sd_ATT), z_stat = c(scores$z_stat, scores$z_stat), p_value = c(scores$p_value, scores$p_value_o), CI_lower = c(scores$CI_lower, scores$CI_lower_o), CI_upper = c(scores$CI_upper, scores$CI_upper_o))
+rownames(res_scores_urb) <- c("2-tails", "1-tail")
+
+knitr::kable(res_scores_urb,digits=4, caption="Propensity scores + DD for Urban variable")
+```
+
+
+## Models amb covariables constants en el temps
+
+A continuació, es vol dur a terme un anàlisi similar al fet anteriorment però considerant el conjunt de dades que té les variables constants en el temps. 
+
+### Model TWFE
+
+#### Variable Total amb l'efecte de covariables
+
+En primer lloc creem el model amb tots els efectes additius i multiplicatius de les covariables, així com la seva corresponent reducció feta manualment en estar treballant amb models de panells, els quals no permeten fer una optimització automàtica. Com es pot notar en aquest cas no se li introdueixen les variables sense el _2*.
+
+
+```{r}
+#mod1<- plm(Total~Tr+age35_2+lic_age15_2+parking_yes2+woman_2+BMzones_2+power100_2+age35_2*Tr+lic_age15_2*Tr+parking_yes2*Tr+woman_2*Tr+BMzones_2*Tr+power100_2*Tr, data = data1c, model = "within")
+#mod2<- plm(Total~Tr+age35_2+lic_age15_2+parking_yes2+woman_2+BMzones_2+power100_2+age35_2*Tr+lic_age15_2*Tr+parking_yes2*Tr+woman_2*Tr+BMzones_2*Tr+power100_2*Tr, data = data1c, model = "within",effect = c("twoways"))
+#pFtest(mod2, mod1)
+# El pvalue és molt petit i per tant s'ha d'incloure la component temporal en el model
+```
+
+
+```{r}
+# For Total # Seria la definició (3) del document original
+mod3_tot<-plm(Total~Tr+age35_2+lic_age15_2+parking_yes2+woman_2+BMzones_2+power100_2+age35_2*Tr+lic_age15_2*Tr+parking_yes2*Tr+woman_2*Tr+BMzones_2*Tr+power100_2*Tr,data=data1c, index = c("ID","Time"),effect = c("twoways"),model = c("within"))
+
+R2<-var(predict(mod2_tot))/var(data1c$Total)
+R2Adj<-1-((var(residuals(mod2_tot))*(nrow(data1c)-1)/(mod2_tot$df.residual))/var(data1c$Total))
+res<-cbind(summary(mod2_tot)$coefficients,R2,R2Adj)
+knitr::kable(res,digits=4, caption="TWFE for Total variable with constant covariates")
+```
+
+
+```{r}
+mod3_tot<-plm(Total~Tr+age35_2+lic_age15_2+parking_yes2+woman_2+BMzones_2+age35_2*Tr+woman_2*Tr,data=data1c, index = c("ID","Time"),effect = c("twoways"),model = c("within"))
+
+R2<-var(predict(mod2_tot))/var(data1c$Total)
+R2Adj<-1-((var(residuals(mod2_tot))*(nrow(data1c)-1)/(mod2_tot$df.residual))/var(data1c$Total))
+
+res<-cbind(summary(mod2_tot)$coefficients,R2,R2Adj)
+knitr::kable(res,digits=4, caption="TWFE for Total variable with covariates")
+```
+
+Tanmateix, com fet anteriorment amb les dades que no eren constants en el temps, es decideix fer el model amb la funció lm per tal de poder optimitzar el resultat d'una forma més senzilla. Com fet anteriorment, primer s'han de centrar les variables al 0. 
+
+```{r, include = FALSE}
+data1c$age35_2_Tr <- data1c$age35_2*data1c$Tr
+data1c$lic_age15_2_Tr <- data1c$lic_age15_2*data1c$Tr
+data1c$parking_yes2_Tr <- data1c$parking_yes2*data1c$Tr
+data1c$woman_2_Tr <- data1c$woman_2*data1c$Tr
+data1c$BMzones_2_Tr <- data1c$BMzones_2*data1c$Tr
+data1c$power100_2_Tr <- data1c$power100_2*data1c$Tr
+
+data1c_ID <- aggregate(data1c,by = list(data1c$ID),FUN = mean)
+data1c_ID<-data1c_ID[,-c(1,3)] # treu "Group.1" (variable creada per la funció prèvia) i Time
+colnames(data1c_ID)<-c("ID","TotalID", "NightID", "SpeedID", "UrbanID", "DID", "TrID", "ageID", "age35ID", "lic_ageID", "lic_age15ID", "parking_yesID", "womanID", "BMzonesID", "power100ID", "age_2ID", "age35_2ID", "lic_age_2ID", "lic_age15_2ID", "parking_yes2ID", "woman_2ID", "BMzones_2ID", "power100_2ID", "age35_2_TrID", "lic_age15_2_TrID", "parking_yes2_TrID", "woman_2_TrID", "BMzones_2_TrID", "power100_2_TrID")
+data1c_tim <- aggregate(data1c,by = list(data1c$Time),FUN = mean)
+data1c_tim<-data1c_tim[,-c(1,2)]
+colnames(data1c_tim)<-c("Time","Totalt", "Nightt", "Speedt", "Urbant", "Dt", "Trt", "aget", "age35t", "lic_aget", "lic_age15t", "parking_yest", "womant", "BMzonest", "power100t", "age_2t", "age35_2t", "lic_age_2t", "lic_age15_2t", "parking_yes2t", "woman_2t", "BMzones_2t", "power100_2t", "age35_2_Trt", "lic_age15_2_Trt", "parking_yes2_Trt", "woman_2_Trt", "BMzones_2_Trt", "power100_2_Trt")
+data1c_final<-left_join(data1c,data1c_ID,by="ID")
+data1c_final<-left_join(data1c_final,data1c_tim,by="Time")
+
+n <- nrow(data1c)
+data1c_centrades<-data1c_final[,3:30]-data1c_final[,31:58]-data1c_final[,59:86]
+data1c_timID <- t(replicate(n,colMeans(data1c_final[,3:30])))
+data1c_centrades<-data1c_centrades+data1c_timID # Replica les mitjanes en totes les files
+colMeans(data1c_centrades) # Comprovació de que totes les variables tenen mitjana 0
+```
+
+En aquest cas l'estimador de l'efecte del tractament és positiu i significatiu, havent augmentat el valor de l'estimador respecte al valor obtingut amb el dataset amb covariables no constants en el temps. També continuen sortint les mateixes variables com a importants excepte lic_age15, que ha desaparegut. Les que apareixen, ho fan amb la mateixa magnitud i signe. 
+
+Com a diferència rellevant, en aquest cas s'ha trobat 2 covariables amb interaccions significatives amb `Tr`. Tot i així, només la variable `woman` presenta un $ATT_2$ significatiu amb coeficient positiu. Amb l'ajuda del gràfic es pot concloure que els usuaris que han tingut un accident sempre condueixen més quilòmetres totals de mitja. Tanmateix, en el cas dels homes, haver-lo tingut implica disminuir menys la quantitat de condució que si no l'haguessin tingut respecte a les dones. 
+
+
+```{r}
+mod3_tot_lm <- lm(Total ~ Tr + age35_2 + lic_age15_2 + parking_yes2 + woman_2 + BMzones_2 + power100_2 + age35_2_Tr + lic_age15_2_Tr + parking_yes2_Tr + woman_2_Tr + BMzones_2_Tr + power100_2_Tr -1, data = data1c_centrades)
+
+R2<-(var(predict(mod3_tot_lm) + data1c_ID$TotalID + data1c_tim$Totalt - data1c_timID[,1]))/var(data1c$Total) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod3_tot_lm))-1))
+res<-cbind(summary(mod3_tot_lm)$coefficients,R2,R2Adj, AIC = AIC(mod3_tot_lm))
+knitr::kable(res,digits=4, caption="TWFE for Total variable with cst covariates")
+```
+
+
+```{r}
+mod3_tot_lm_red <- stepAIC(mod3_tot_lm, trace = FALSE)
+R2<-(var(predict(mod3_tot_lm_red) + data1c_ID$TotalID + data1c_tim$Totalt - data1c_timID[,1]))/var(data1c$Total) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod3_tot_lm_red))-1))
+res<-cbind(summary(mod3_tot_lm_red)$coefficients,R2,R2Adj, AIC = AIC(mod3_tot_lm_red))
+knitr::kable(res,digits=4, caption="TWFE for Total variable with cst reduced covariates\\label{TWFE_total_cst_reduced}")
+```
+
+```{r}
+# age35:
+res_1 <- signif(mod3_tot_lm_red, c(1,0,0,0,1,0))
+# Woman:
+res_2 <- signif(mod3_tot_lm_red, c(1,0,1,0,0,1))
+
+res_effects<-cbind(res_1, res_2)
+colnames(res_effects)<-c("age35","woman")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+
+```{r, out.width="70%", fig.align = 'center'}
+# woman
+Means<-aggregate(Total~Time+D+woman,data=data1c,mean)
+Means<-as.data.frame(Means)
+
+#knitr::kable(Means,digits=4, caption="Means for pre and post-treatment periods by group")
+Means$D=as.factor(Means$D)
+Means$time=as.factor(Means$Time)
+p3<-ggplot(data=Means[Means$woman == 0,], aes(x=Time, y=Total, group=D)) +
+  geom_line(aes(linetype=D),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "Total yearly km", x = "Time", title = "Homes")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+p4<-ggplot(data=Means[Means$woman == 1,], aes(x=Time, y=Total, group=D)) +
+  geom_line(aes(linetype=D),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "Total yearly km", x = "Time", title = "Dones")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+
+# Grafiquem
+grid.arrange(p3, p4,ncol = 2)
+```
+
+Tal com fet amb els models amb covariables canviants en el temps, es tornarà a analitzar com canvien aquests si s'introdueix únicament la variable `age35` o `lic_age15` dins d'aquests; així com també es mirarà com canvien al eliminar la variable `parking_yes` per complet si la seva interacció amb `Tr` surt significativa. 
+
+En aquest cas la interacció de `Tr` amb la variable `parking_yes` és no significativa i per tant no es considera treure-la del model. De fet, es nota que en aquest cas, considerant els estudis que es volen dur a terme, només s'ha d'estudiar si eliminar la variable `age35` del model dona lloc a que els anys de llicència "reemplacin" la informació en el model o no. A l'analitzar els resultats es pot notar que la informació és clarament no reemplaçada en no sortir el coeficient `lic_age15_2_Tr` com a significatiu. A més a més, l'AIC del model ha disminuit respecte l'anterior, tot i que l'$R^2_{Adj}$ s'ha mantingut estable. La conclusió és clara: es necessita l'edat de l'assegurat per a predir amb major encert el nombre de quilòmetres totals que realitzarà un assegurat i els anys de llicència que tenen aquests conductors no aporta la mateixa informació. Fer notar que aquesta conclusió és contrària a la que s'obtenia quan s'analitzava el conjunt de dades amb covariables canviants en el temps. També es pot notar que eliminar l'edat fa que la interacció de la variable `woman` amb `Tr` sigui menys significativa que anteriorment, tot i que es continua trobant per sota del límit del $5\%$.
+
+```{r}
+mod3_tot_lm_lic <- lm(Total ~ Tr + lic_age15_2 + parking_yes2 + woman_2 + BMzones_2 + power100_2 + lic_age15_2_Tr + parking_yes2_Tr + woman_2_Tr + BMzones_2_Tr + power100_2_Tr -1, data = data1c_centrades)
+
+mod3_tot_lm_lic_red <- stepAIC(mod3_tot_lm_lic, trace = FALSE)
+
+R2<-(var(predict(mod3_tot_lm_lic_red) + data1c_ID$TotalID + data1c_tim$Totalt - data1c_timID[,1]))/var(data1c$Total) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod3_tot_lm_lic_red))-1))
+res<-cbind(summary(mod3_tot_lm_lic_red)$coefficients,R2,R2Adj, AIC = AIC(mod3_tot_lm_lic_red))
+knitr::kable(res,digits=4, caption="TWFE for Total variable with cst reduced covariates without age35")
+
+# woman_2_Tr
+res_1 <- signif(mod3_tot_lm_lic_red, as.vector(c(1,0,1,0,1)))
+
+res_effects<-cbind(res_1)
+colnames(res_effects)<-c("woman")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+
+#### Variable Night amb l'efecte de covariables
+
+Així com passava en el cas del conjunt de dades amb les covariables canviants en el temps l'estimador de l'efecte del tractament és no significatiu i molt proper a 0. Tanmateix, en aquest cas només ha sortit 1 interacció amb la variable `Tr` com a rellevant. Al mostrar un efecte del tractament no significatiu, es conclou que cap de les covariables incloses en el conjunt de dades té un efecte rellevant en relació a si s'ha tingut un accident o no. Així doncs, els efectes anteriorment vistos a l'analitzar el conjunt de dades amb les covariables canviants en el temps sobre les variables `power100` i `lic_age15` han desaparegut.
+
+Pel que fa a les variables sense interacció es pot notar que tenir menys de 35 anys, disposar de pàrquing i tenir un cotxe petit dona lloc a recòrrer un percentatge de quilòmetres menor durant la nit durant el període de post-tractament. Contràriament, ser dona i conduir per Barcelona o Madrid, com a zones principals, augmenten aquest percentatge. 
+```{r}
+# For Night 
+#mod2_nig<-plm(Night~Tr+age35_2+lic_age15_2+parking_yes2+woman_2+BMzones_2+power100_2+age35_2*Tr+lic_age15_2*Tr+parking_yes2*Tr+woman_2*Tr+BMzones_2*Tr+power100_2*Tr,data=data1c, index = c("ID","Time"),effect = c("twoways"),model = c("within"))
+
+#R2<-var(predict(mod2_nig))/var(data1c$Night)
+#R2Adj<-1-((var(residuals(mod2_nig))*(nrow(data1c)-1)/(mod2_nig$df.residual))/var(data1c$Night))
+#res<-cbind(summary(mod2_nig)$coefficients,R2,R2Adj)
+#knitr::kable(res,digits=4, caption="TWFE for Night variable with constant covariates")
+```
+
+```{r}
+mod3_nig_lm <- lm(Night ~ Tr + age35_2 + lic_age15_2 + parking_yes2 + woman_2 + BMzones_2 + power100_2 + age35_2_Tr + lic_age15_2_Tr + parking_yes2_Tr + woman_2_Tr + BMzones_2_Tr + power100_2_Tr -1, data = data1c_centrades)
+
+R2<-(var(predict(mod3_nig_lm) + data1c_ID$NightID + data1c_tim$Nightt - data1c_timID[,2]))/var(data1c$Night) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod3_nig_lm))-1))
+res<-cbind(summary(mod3_nig_lm)$coefficients,R2,R2Adj, AIC = AIC(mod3_nig_lm))
+knitr::kable(res,digits=4, caption="TWFE for Night variable with cst covariates")
+```
+
+
+```{r}
+mod3_nig_lm_red <- stepAIC(mod3_nig_lm, trace = FALSE,
+                           scope = list(lower = formula("Night ~ Tr"),
+                                 upper = formula(mod3_nig_lm)))
+R2<-(var(predict(mod3_nig_lm_red) + data1c_ID$NightID + data1c_tim$Nightt - data1c_timID[,2]))/var(data1c$Night) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod3_nig_lm_red))-1))
+res<-cbind(summary(mod3_nig_lm_red)$coefficients,R2,R2Adj, AIC = AIC(mod3_nig_lm_red))
+knitr::kable(res,digits=4, caption="TWFE for Night variable with cst reduced covariates")
+```
+
+
+
+```{r}
+# power100:
+res_1 <- signif(mod3_nig_lm_red, c(1,0,0,0,0,1,1))
+
+res_effects<-cbind(res_1)
+colnames(res_effects)<-c("power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+A diferència de amb les dades amb covariables canviants en el temps, la interacció amb `Tr` de la variable `parking_yes` no surt significativa i per tant només fa falta estudiar què passa quan deixem en el model únicament `age35` o `lic_age15`. En aquest aspecte, el model altre cop es diferencia de la secció anterior, en mostrar únicament la variable `age35` com a important. Així doncs, podem mirar què passaria si únicament introduim en el model `lic_age15`, tot i que ja sabem que els resultats empitjoraran. Es vol saber doncs si tot i no ser millor que `age35`, `lic_age15` pot ajudar a predir el percentatge de quilòmetres recorreguts nocturnament en abscència de l'edat. La resposta és no, en no sortir la variable en el model creat. La significació de la interacció `power100`-`Tr` no canvia de forma rellevant. 
+
+
+```{r}
+mod3_tot_lm_lic <- lm(Night ~ Tr  + lic_age15_2 + parking_yes2 + woman_2 + BMzones_2 + power100_2 + lic_age15_2_Tr + parking_yes2_Tr + woman_2_Tr + BMzones_2_Tr + power100_2_Tr -1, data = data1c_centrades)
+
+mod3_tot_lm_lic_red <- stepAIC(mod3_tot_lm_lic, trace = FALSE,
+                           scope = list(lower = formula("Night ~ Tr"),
+                                 upper = formula(mod3_tot_lm_lic)))
+
+R2<-(var(predict(mod3_tot_lm_lic_red) + data1c_ID$NightID + data1c_tim$Nightt - data1c_timID[,2]))/var(data1c$Night) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod3_tot_lm_lic_red))-1))
+res<-cbind(summary(mod3_tot_lm_lic_red)$coefficients,R2,R2Adj, AIC = AIC(mod3_tot_lm_lic_red))
+knitr::kable(res,digits=4, caption="TWFE for Night variable with cst reduced covariates without age35")
+
+# power100_2_Tr
+res_1 <- signif(mod3_tot_lm_lic_red, as.vector(c(1,0,0,0,1,1)))
+
+res_effects<-cbind(res_1)
+colnames(res_effects)<-c("power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+
+#### Variable Speed amb l'efecte de covariables
+
+Les conclusions més rellevants aquest cop són similars al model obtingut amb les covariables canviants en el temps. D'una banda, tots dos models han trobat varies interaccions dins del millor model escollit: age35, lic_age15 i power100. Així mateix, en tots dos s'observa un efecte del tractament negatiu però no significatiu. A l'analitzar l'efecte a t=2 es nota que aquest és positiu i significatiu per a totes les variables, a diferència dels resultats que es trobaven anteriorment. 
+
+A l'analitzar les característiques per separat notem que totes les variables analitzades són significatives en quant a l'efecte del tractament. D'una banda l'edat presenta un $ATT_2$ negatiu indicant que aquells usuaris joves que tenen un accident, generalment decreixen la velocitat després de patir-lo. D'altra banda, els anys de llicència i la potència del cotxe presenten un valor positiu indicant que els usuaris que tenen cotxes petits i pocs anys de llicència, incrementen la velocitat després de tenir un accident, contràriament a l'esperat. Amb l'ajuda de les gràfiques podem veure que de fet, pel que fa als usuaris amb pocs anys de carnet, no és que aquells que tinguin un accident augmentin la seva velocitat, sinó que els que no el tenen la disminueixen encara més respecte al seu comportament anterior. Un comportament similar però menys marcat succeeix pels cotxes petits.
+
+```{r}
+# For Speed 
+#mod2_spe<-plm(Speed~Tr+age35_2+lic_age15_2+parking_yes2+woman_2+BMzones_2+power100_2+age35_2*Tr+lic_age15_2*Tr+parking_yes2*Tr+woman_2*Tr+BMzones_2*Tr+power100_2*Tr,data=data1c, index = c("ID","Time"),effect = c("twoways"),model = c("within"))
+
+#R2<-var(predict(mod2_spe))/var(data1c$Speed)
+#R2Adj<-1-((var(residuals(mod2_spe))*(nrow(data1c)-1)/(mod2_spe$df.residual))/var(data1c$Speed))
+#res<-cbind(summary(mod2_spe)$coefficients,R2,R2Adj)
+#knitr::kable(res,digits=4, caption="TWFE for Speed variable with covariates")
+```
+
+```{r}
+mod3_spe_lm <- lm(Speed ~ Tr + age35_2 + lic_age15_2 + parking_yes2 + woman_2 + BMzones_2 + power100_2 + age35_2_Tr + lic_age15_2_Tr + parking_yes2_Tr + woman_2_Tr + BMzones_2_Tr + power100_2_Tr -1, data = data1c_centrades)
+
+R2<-(var(predict(mod3_spe_lm) + data1c_ID$SpeedID + data1c_tim$Speedt - data1c_timID[,3]))/var(data1c$Speed) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod3_spe_lm))-1))
+res<-cbind(summary(mod3_spe_lm)$coefficients,R2,R2Adj, AIC = AIC(mod3_spe_lm))
+knitr::kable(res,digits=4, caption="TWFE for Speed variable with cst covariates")
+```
+
+
+```{r}
+mod3_spe_lm_red <- stepAIC(mod3_spe_lm, trace = FALSE,
+                           scope = list(lower = formula("Speed ~ Tr"),
+                                 upper = formula(mod3_spe_lm)))
+R2<-(var(predict(mod3_spe_lm_red) + data1c_ID$SpeedID + data1c_tim$Speedt - data1c_timID[,3]))/var(data1c$Speed) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod3_spe_lm_red))-1))
+res<-cbind(summary(mod3_spe_lm_red)$coefficients,R2,R2Adj, AIC = AIC(mod3_spe_lm_red))
+knitr::kable(res,digits=4, caption="TWFE for Speed variable with cst reduced covariates")
+```
+
+
+```{r}
+# age<=35:
+res_1 <- signif(mod3_spe_lm_red, c(1,1,0,0,0,1,0,0))
+# lic_age<=15:
+res_2 <- signif(mod3_spe_lm_red,c(1,0,1,0,0,0,1,0))
+# power<=100:
+res_3 <- signif(mod3_spe_lm_red,c(1,0,0,0,1,0,0,1))
+
+res_effects<-cbind(res_1,res_2, res_3)
+colnames(res_effects)<-c("age<=35", "lic_age<=15","power<=100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+
+```{r, out.width="70%", fig.align = 'center'}
+# age<=35
+Means<-aggregate(Speed~Time+D+age35,data=data1c,mean)
+Means<-as.data.frame(Means)
+
+#knitr::kable(Means,digits=4, caption="Means for pre and post-treatment periods by group")
+Means$D=as.factor(Means$D)
+Means$time=as.factor(Means$Time)
+p1<-ggplot(data=Means[Means$age35 == 0,], aes(x=Time, y=Speed, group=D)) +
+  geom_line(aes(linetype=D),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% Over-speed limits", x = "Time", title = "Age>35")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+p2<-ggplot(data=Means[Means$age35 == 1,], aes(x=Time, y=Speed, group=D)) +
+  geom_line(aes(linetype=D),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% Over-speed limits", x = "Time", title = "Age<=35")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+
+# lic_age<=15
+Means<-aggregate(Speed~Time+D+lic_age15,data=data1c,mean)
+Means<-as.data.frame(Means)
+
+#knitr::kable(Means,digits=4, caption="Means for pre and post-treatment periods by group")
+Means$D=as.factor(Means$D)
+Means$time=as.factor(Means$Time)
+p3<-ggplot(data=Means[Means$lic_age15 == 0,], aes(x=Time, y=Speed, group=D)) +
+  geom_line(aes(linetype=D),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% Over-speed limits", x = "Time", title = "Lic Age>15")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+p4<-ggplot(data=Means[Means$lic_age15 == 1,], aes(x=Time, y=Speed, group=D)) +
+  geom_line(aes(linetype=D),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% Over-speed limits", x = "Time", title = "Lic Age<=15")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+
+# power<=100
+Means<-aggregate(Speed~Time+D+power100,data=data1c,mean)
+Means<-as.data.frame(Means)
+
+#knitr::kable(Means,digits=4, caption="Means for pre and post-treatment periods by group")
+Means$D=as.factor(Means$D)
+Means$time=as.factor(Means$Time)
+p5<-ggplot(data=Means[Means$power100 == 0,], aes(x=Time, y=Speed, group=D)) +
+  geom_line(aes(linetype=D),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% Over-speed limits", x = "Time", title = "Power>100")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+p6<-ggplot(data=Means[Means$power100 == 1,], aes(x=Time, y=Speed, group=D)) +
+  geom_line(aes(linetype=D),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% Over-speed limits", x = "Time", title = "Power<=100")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+
+# Grafiquem
+grid.arrange(p1, p2, p3, p4, p5, p6, ncol=2)
+```
+
+Altre cop la variable `parking_yes` no surt en cap lloc del model i per tant no ens hem de preocupar per ella. No obstant això, en aquest cas sí que apareixen com a rellevants tant `age35` com `lic_age15`, inclús presentant totes dues una interacció amb `Tr` en el model. Anteriorment s'ha vist que totes dues variable, així com `power100` presentaven un $ATT_2$ significatiu. A continuació es mirarà si la significació canvia a l'eliminar una de les dues variables de model. Eliminar els anys de llicència dona lloc a un pvalor de l'$ATT_2$ de la variable edat significatiu al $4.5\%$, mentre la significació de `power100` es continua mantenint intacte. D'altra banda, eliminar l'edat dona lloc a una eliminació completa de la interacció dels anys de llicència amb `Tr`, mentre altre cop els resultats de `power100` no canvien. 
+
+Tenint en compte el mencionat anteriorment i el fet que l'AIC del model sense `age35` és menor (i l'$R^2_{Adj}$ major) en comparació al model sense `lic_age15`, s'hauria de concloure que si es vol analitzar com canvia el comportament d'un assegurat en front un accident seria millor disposar de la variable edat, mentre si es vol donar més importància a predir correctament el percentatge de quilòmetres que es durant a terme per sobre de la velocitat els anys de llicència d'un assegurat són més importants. Òbviament, en tot cas la millor opció seria disposar de totes dues variables, com en aquest treball. 
+
+
+```{r}
+# Age
+mod3_spe_lm_age <- lm(Speed ~ Tr + age35_2 + parking_yes2 + woman_2 + BMzones_2 + power100_2 + age35_2_Tr + parking_yes2_Tr + woman_2_Tr + BMzones_2_Tr + power100_2_Tr -1, data = data1c_centrades)
+
+mod3_spe_lm_age_red <- stepAIC(mod3_spe_lm_age, trace = FALSE, 
+                               scope = list(lower = formula("Speed ~ Tr"),
+                                 upper = formula(mod3_spe_lm_age)))
+R2<-(var(predict(mod3_spe_lm_age_red) + data1c_ID$SpeedID + data1c_tim$Speedt - data1c_timID[,3]))/var(data1c$Speed) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod3_spe_lm_age_red))-1))
+res<-cbind(summary(mod3_spe_lm_age_red)$coefficients,R2,R2Adj, AIC = AIC(mod3_spe_lm_age_red))
+knitr::kable(res,digits=4, caption="TWFE for Speed variable with cst reduced covariates without lic_age15")
+
+# age35_2_Tr
+res_1 <- signif(mod3_spe_lm_age_red, as.vector(c(1,1,0,0,1,0)))
+# power100_2_Tr
+res_2 <- signif(mod3_spe_lm_age_red, as.vector(c(1,0,0,1,0,1)))
+
+res_effects<-cbind(res_1, res_2)
+colnames(res_effects)<-c("age35","power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+```{r}
+# Lic_age15
+mod3_spe_lm_lic <- lm(Speed ~ Tr + lic_age15_2 + parking_yes2 + woman_2 + BMzones_2 + power100_2 + lic_age15_2_Tr + parking_yes2_Tr + woman_2_Tr + BMzones_2_Tr + power100_2_Tr -1, data = data1c_centrades)
+
+mod3_spe_lm_lic_red <- stepAIC(mod3_spe_lm_lic, trace = FALSE, 
+                               scope = list(lower = formula("Speed ~ Tr"),
+                                 upper = formula(mod3_spe_lm_lic)))
+R2<-(var(predict(mod3_spe_lm_lic_red) + data1c_ID$SpeedID + data1c_tim$Speedt - data1c_timID[,3]))/var(data1c$Speed) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod3_spe_lm_lic_red))-1))
+res<-cbind(summary(mod3_spe_lm_lic_red)$coefficients,R2,R2Adj, AIC = AIC(mod3_spe_lm_lic_red))
+knitr::kable(res,digits=4, caption="TWFE for Speed variable with cst reduced covariates without age35")
+
+# power100_2_Tr
+res_1 <- signif(mod3_spe_lm_lic_red, as.vector(c(1,0,0,1,1)))
+
+res_effects<-cbind(res_1)
+colnames(res_effects)<-c("power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+
+
+#### Variable Urban amb l'efecte de covariables
+
+Tornem a trobar que algunes interaccions són significatives. D'altra banda, l'estimador de l'efecte del tractament és negatiu i significatiu, indicant que tenir un accident disminueix el percentatge de quilòmetres recorreguts per via urbana. Totes les variables que han sortit com a significatives mostren un efecte negatiu a t=2, indicant que tenir menys de 35 anys, tenir la llicència fa menys de 15 anys, conduir principalment per Barcelona o Madrid i tenir un cotxe petit fa disminuir el percentatge de quilòmetres recorreguts per vies urbanes. 
+
+Finalment, comentar que tot i que la interacció entre les variables `woman` i `lic_age15` i `Tr` milloren el model en quant a informació captada en relació a la quantitat d'informació considerada, al treure els estadístics particulars, els $ATT_2$ són no significatius. 
+
+```{r}
+# For Urban
+#mod2_urb<-plm(Urban~Tr+age35_2+lic_age15_2+parking_yes2+woman_2+BMzones_2+power100_2+age35_2*Tr+lic_age15_2*Tr+parking_yes2*Tr+woman_2*Tr+BMzones_2*Tr+power100_2*Tr,data=data1c, index = c("ID","Time"),effect = c("twoways"),model = c("within"))
+
+#R2<-var(predict(mod2_urb))/var(data1c$Urban)
+#R2Adj<-1-((var(residuals(mod2_urb))*(nrow(data1c)-1)/(mod2_urb$df.residual))/var(data1c$Urban))
+#res<-cbind(summary(mod2_urb)$coefficients,R2,R2Adj)
+#knitr::kable(res,digits=4, caption="TWFE for Urban variable with covariates")
+```
+
+```{r}
+mod3_urb_lm <- lm(Urban ~ Tr + age35_2 + lic_age15_2 + parking_yes2 + woman_2 + BMzones_2 + power100_2 + age35_2_Tr + lic_age15_2_Tr + parking_yes2_Tr + woman_2_Tr + BMzones_2_Tr + power100_2_Tr -1, data = data1c_centrades)
+
+R2<-(var(predict(mod3_urb_lm) + data1c_ID$UrbanID + data1c_tim$Urbant - data1c_timID[,4]))/var(data1c$Urban) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod3_urb_lm))-1))
+res<-cbind(summary(mod3_urb_lm)$coefficients,R2,R2Adj, AIC = AIC(mod3_urb_lm))
+knitr::kable(res,digits=4, caption="TWFE for Urban variable with cst covariates")
+```
+
+
+```{r}
+mod3_urb_lm_red <- stepAIC(mod3_urb_lm, trace = FALSE,
+                           scope = list(lower = formula("Urban ~ Tr"),
+                                 upper = formula(mod3_urb_lm)))
+R2<-(var(predict(mod3_urb_lm_red) + data1c_ID$UrbanID + data1c_tim$Urbant - data1c_timID[,4]))/var(data1c$Urban) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod3_urb_lm_red))-1))
+res<-cbind(summary(mod3_urb_lm_red)$coefficients,R2,R2Adj, AIC = AIC(mod3_urb_lm_red))
+knitr::kable(res,digits=4, caption="TWFE for Urban variable with cst reduced covariates")
+```
+
+```{r}
+# lic_age<=15:
+res_1 <- signif(mod3_urb_lm_red, c(1,0,1,0,0,1,0))
+# Woman: 
+res_2 <- signif(mod3_urb_lm_red,c(1,0,0,0,0,0,1)) 
+
+res_effects<-cbind(res_1,res_2)
+colnames(res_effects)<-c("lic_age<=15","woman")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+Altre cop la variable `parking_yes` no és en absolut rellevant en el model. No obstant això, la variable edat sí que ajuda a predir el percentatge de quilòmetres que els assegurats realitzaran per vies urbanes, mentre els anys de carnet, ajuden tant a l'anterior propòsit com a saber qui tindrà un accident amb major probabilitat, segons el model. Es realitzarà doncs altre cop el mateix proccés que en la secció anterior. Destacar dels resultats que deixar únicament la variable edat fa que l'$ATT_2$ de `woman` quasí bé sigui significatiu, indicant que `lic_age15` és un distractor per a aquesta variable, tot i que el model que conté `lic_age15` explica més informació que el que únicament conté `age35`.
+
+La conclusió doncs és similar a la realitzada per a la variable `Speed` d'aquesta mateixa secció. Disposar de totes dues variables seria el millor. Tanmateix, si es vol analitzar com canvia el comportament d'un assegurat en front un accident seria millor disposar de la variable edat, mentre si es vol donar més importància a predir correctament el percentatge de quilòmetres que es durant a terme per sobre de la velocitat els anys de llicència d'un assegurat són més importants.
+
+Així com pel cas del dataset amb covariables canviants en el temps s'ha conclós que disposar dels anys de carnet era més informatiu (menor AIC) per a 3 de les 4 variables dependents, en aquest cas no es pot concloure res perquè l'edat és millor per a predir els quilòmetre totals que realitzaran els assegurats així com el percentatge de quilòmetres recorreguts durant la nit, mentre els anys de llicència són millor per a les altres dues variables "Urban" i "Speed". Així doncs, la variable "Total" és la única que ha canviat en aquest sentit al canviar de conjunt de dades. 
+
+```{r}
+# Age
+mod3_urb_lm_age <- lm(Urban ~ Tr + age35_2 + parking_yes2 + woman_2 + BMzones_2 + power100_2 + age35_2_Tr + parking_yes2_Tr + woman_2_Tr + BMzones_2_Tr + power100_2_Tr -1, data = data1c_centrades)
+
+mod3_urb_lm_age_red <- stepAIC(mod3_urb_lm_age, trace = FALSE, 
+                               scope = list(lower = formula("Urban ~ Tr"),
+                                 upper = formula(mod3_urb_lm_age)))
+R2<-(var(predict(mod3_urb_lm_age_red) + data1c_ID$UrbanID + data1c_tim$Urbant - data1c_timID[,4]))/var(data1c$Urban) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod3_urb_lm_age_red))-1))
+res<-cbind(summary(mod3_urb_lm_age_red)$coefficients,R2,R2Adj, AIC = AIC(mod3_urb_lm_age_red))
+knitr::kable(res,digits=4, caption="TWFE for Urban variable with cst reduced covariates without lic_age15")
+
+# woman_2_Tr
+res_1 <- signif(mod3_urb_lm_age_red, as.vector(c(1,0,0,0,1)))
+
+res_effects<-cbind(res_1)
+colnames(res_effects)<-c("woman")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+```{r}
+# Lic_age15
+mod3_urb_lm_lic <- lm(Urban ~ Tr + lic_age15_2 + parking_yes2 + woman_2 + BMzones_2 + power100_2 + lic_age15_2_Tr + parking_yes2_Tr + woman_2_Tr + BMzones_2_Tr + power100_2_Tr -1, data = data1c_centrades)
+
+mod3_urb_lm_lic_red <- stepAIC(mod3_urb_lm_lic, trace = FALSE, 
+                               scope = list(lower = formula("Urban ~ Tr"),
+                                 upper = formula(mod3_urb_lm_lic)))
+R2<-(var(predict(mod3_urb_lm_lic_red) + data1c_ID$UrbanID + data1c_tim$Urbant - data1c_timID[,4]))/var(data1c$Urban) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod3_urb_lm_lic_red))-1))
+res<-cbind(summary(mod3_urb_lm_lic_red)$coefficients,R2,R2Adj, AIC = AIC(mod3_urb_lm_lic_red))
+knitr::kable(res,digits=4, caption="TWFE for Urban variable with cst reduced covariates without age35")
+
+# lic_age15_2_Tr
+res_1 <- signif(mod3_urb_lm_lic_red, as.vector(c(1,1,0,0,1,0)))
+# woman_2_Tr 
+res_2 <- signif(mod3_urb_lm_lic_red, as.vector(c(1,0,0,0,0,1)))
+
+res_effects<-cbind(res_1, res_2)
+colnames(res_effects)<-c("lic_age15","woman")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+
+### Models semi-paramètrics (IWE)
+
+A la pràctica l'$\widehat{ATT_2}$ que calcula aquest model, és la mitjana ponderada de cada conjunt de dades amb els mateixos valors per les covariables $X_i$. Són doncs bàsicament una mitjana mostral ponderada. 
+
+Només té sentit aplicar aquest tipus de models amb les solucions que en la secció anterior (TWFE amb covariables constants en el temps) han retornat interaccions dins del millor model seleccionat. Concretament, per a aplicar el mètode s'han de seleccionar els individus que cumpleixen les interaccions trobades com a rellevants. Amb rellevants ens referim a interaccions que han sortit en el model final, sense la necessitat que aquestes hagin hagut de ser significatives o que el seu efecte de tractament hagi resultat significatiu. Per a aquests usuaris s'ha d'aplicar el logit o altres mèotdes com un tree o un random forest. S'ha de tenir en compte que a vegades ens podem quedar sense usuaris amb Tr = 1 al filtrar amb les variables d'interès (interaccions). En aquests cassos no s'hi pot fer res, simplement no es podrà aplicar el mètode, és precisament una de les debilitats d'aquest.  
+
+També s'ha de tenir en compte que a l'aplicar el mètode s'ha d'assumir que els períodes t = 1 i t = 2 són independents. Tanmateix, aquesta assumpció podria ser criticable perquè s'està tractant en tot cas amb els mateixos individus a t = 1 i t = 2, encara que existeixi 1 any pel mig. 
+
+A continuació es descriuran els resultats que s'obtenen en cada cas, tanmateix, la conclusió general és que els models (logit, tree i random forest) no donen lloc a cap resultat significatiu. De fet, si es realitzen els summary d'aquests es nota que tots els coeficients mostren pvalors no significatius. Altre cop, això és degut a que aquesta tipologia d'estimadors, els semi-paramètrics i els no paramètrics no serveixen per dades desbalancejades, com amb les que s'està tractant.  
+
+
+#### Variable Total amb l'efecte de covariables
+
+La variable `Total` ha mostrat en la secció anterior que tant l'edat com el fet de ser dona eren interaccions rellevants en el model \ref{TWFE_total_cst_reduced}. Així doncs, es filtrarà per totes dues. En primer lloc, es farà l'anàlisi per cadascuna d'elles de forma separada perquè es recorda que si es filtra massa, ens podem arribar a quedar sense representació. 
+
+Com a recordatori de la última secció cal comentar que la variable `age35` i `woman` havien sortit rellevants en el model, però només `woman` havia resultat en tenir un $ATT_2$ significatiu i positiu, mentre l'efecte del tractament del model era 1480, sent aquest significatiu. Tanmateix, en aquest cas cap de les combinacions de filtratges ha resultat en un efecte del tractament significatiu, sent la filtració per la variable `woman` la que s'ha trobat més aprop d'estar-ho. 
+
+##### Filtratge per "age35"
+
+```{r}
+# Seleccionem només el conjunt de dades que ens interessa
+data1c_tot_red <- data1c[data1c$age35 == 1,]
+
+# Yi1 = Km totals en t = 1 / Yi2 = Km totals en t = 2
+data1c_tot_red[data1c_tot_red$Time==2, "Y1"] <- data1c_tot_red[data1c_tot_red$Time == 1,"Total"]
+data1c_tot_red[data1c_tot_red$Time==2, "Y2"] <- data1c_tot_red[data1c_tot_red$Time == 2,"Total"]
+
+# Seleccionem només les dades a t = 2
+data1c_tot_red <- data1c_tot_red[data1c_tot_red$Time == 2, ]
+
+n <- nrow(data1c_tot_red)
+df <- n - 1 # graus de llibertat
+
+# Comprovem si el subconjunt de dades obtingut té algun Tr = 1
+cat("Assegurats amb accidents que queden a la mostra: ", sum(data1c_tot_red[data1c_tot_red$Tr == 1,"Tr"]))
+```
+
+```{r}
+# LOGIT
+semiparametric_logit <- function(dd, df) {
+  # Estimem p_i(X_i) = P(D_i = 1 | X_i)
+  model_logit <- glm(D ~ age35+lic_age15+parking_yes+BMzones+power100+woman, data = dd)
+  
+  mean_D = mean(dd[,"D"]) # Mitjana de la variable control i/o tractament
+  
+  dd[,"pred"] <- predict(model_logit, newdata = dd)
+
+  dd[,"w"] <- (1/mean_D)* ((dd[,"D"] - dd[,"pred"])/(1 - dd[,"pred"]))
+
+  #dd[,"phi"] <- (dd[,"D"] - dd[,"pred"]) / (dd[,"pred"]*(1-dd[,"pred"]))
+  
+  ATT_2 = sum(dd[,"w"]*(dd[,"Y2"] - dd[,"Y1"]))
+  
+  var_ATT_2 <- sum((dd[,"w"])^2 * (var(dd[,"Y1"])+var(dd[,"Y2"])-2*cov(dd[,"Y1"], dd[,"Y2"])))
+  sd_ATT_2 <- sqrt(var_ATT_2)
+  t_stat <- ATT_2 / sd_ATT_2
+  # Two-tailed test
+  p_value <- 2 * (1 - pt(abs(t_stat), df))  
+  t_critical <- qt(1 - 0.05 / 2, df)
+  CI_lower <- ATT_2 - t_critical * sd_ATT_2
+  CI_upper <- ATT_2 + t_critical * sd_ATT_2
+  # One-tailed test 
+  t_critical_o <- qt(1 - 0.05, df) 
+  direction <- ifelse(ATT_2 >0, ">", "<")
+  if (direction == '>') {
+    p_value_o <- 1 - pt(t_stat, df)  
+    CI_lower_o <- ATT_2 - t_critical_o * sd_ATT_2
+    CI_upper_o <- Inf # Positive infinity for greater than
+  } else {
+    p_value_o <- pt(t_stat, df) 
+    CI_lower_o <- -Inf  # Negative infinity for less than
+    CI_upper_o <- ATT_2 + t_critical_o * sd_ATT_2
+  }
+  return(list(ATT_2 = ATT_2, sd_ATT_2 = sd_ATT_2, t_stat = t_stat,
+              p_value = p_value, CI_lower = CI_lower, CI_upper = CI_upper,
+              p_value_o = p_value_o, CI_lower_o = CI_lower_o, CI_upper_o = CI_upper_o,
+              t_critical = t_critical, t_critical_o = t_critical_o, mean_D = mean_D))
+}
+```
+
+```{r}
+# TREE
+semiparametric_tree <- function(dd, df, t_critical, t_critical_o, mean_D) {
+  # Estimem p_i(X_i) = P(D_i = 1 | X_i)
+  model_tree <- rpart(D ~ age35+lic_age15+parking_yes+BMzones + power100+woman, data = dd)
+  
+  dd[,"pred_tree"] <- predict(model_tree, newdata = dd)
+  
+  dd[,"w_tree"] <- (1 / mean_D) * ((dd[,"D"] - dd[,"pred_tree"]) / (1 - dd[,"pred_tree"]))
+  
+  ATT_2_tree = sum(dd[,"w_tree"]*(dd[,"Y2"] - dd[,"Y1"]))
+  
+  var_ATT_2_tree <- sum((dd[,"w_tree"])^2 * (var(dd[,"Y1"])+var(dd[,"Y2"])-2*cov(dd[,"Y1"], dd[,"Y2"])))
+  sd_ATT_2_tree <- sqrt(var_ATT_2_tree)
+  t_stat_tree <- ATT_2_tree / sd_ATT_2_tree
+  # Two-tailed test
+  p_value_tree <- 2 * (1 - pt(abs(t_stat_tree), df))  
+  CI_lower_tree <- ATT_2_tree - t_critical * sd_ATT_2_tree
+  CI_upper_tree <- ATT_2_tree + t_critical * sd_ATT_2_tree
+  # One_tailed test
+  direction <- ifelse(ATT_2_tree >0, ">", "<")
+  if (direction == '>') {
+    p_value_tree_o <- 1 - pt(t_stat_tree, df) 
+    CI_lower_tree_o <- ATT_2_tree - t_critical_o * sd_ATT_2_tree
+    CI_upper_tree_o <- Inf
+  } else {
+    p_value_tree_o <- pt(t_stat_tree, df) 
+    CI_lower_tree_o <- -Inf  # Negative infinity for less than
+    CI_upper_tree_o <- ATT_2_tree + t_critical_o * sd_ATT_2_tree
+  }
+  return(list(ATT_2_tree = ATT_2_tree,sd_ATT_2_tree=sd_ATT_2_tree,t_stat_tree = t_stat_tree,
+          p_value_tree=p_value_tree,CI_lower_tree=CI_lower_tree,CI_upper_tree=CI_upper_tree,
+          p_value_tree_o=p_value_tree_o,CI_lower_tree_o=CI_lower_tree_o,CI_upper_tree_o=CI_upper_tree_o))
+}
+```
+
+
+```{r , warning=FALSE}
+# RANDOM FOREST 
+semiparametric_rf <- function(dd,df,t_critical, t_critical_o, mean_D) {
+  #Escollim primer quin és el nombre correcte d'arbres a escollir. Volem un nombre que sigui un bon balanç entre el rendiment del model i l'eficiència computacional. 
+  # S'escull amb cross validation: tècnica robusta per a l'ajustament d'hiperparàmetres. La llibreria caret d'R et deixa implementar directament mètodes de cross-validation. 
+  set.seed(1234)
+  
+  ntree_values <- c(50, 100, 150, 200, 250, 300, 350, 400, 450, 500) 
+  results <- data.frame(ntree = integer(0), RMSE = numeric(0))
+  
+  control <- trainControl(method = "cv", number = 10)  # 10-fold cross-validation
+  for (ntree in ntree_values) {
+    model <- train(D ~ age35+lic_age15 + parking_yes + BMzones + power100+woman, data = dd,
+                   method = "rf", ntree = ntree, trControl = control)
+    results <- rbind(results, data.frame(ntree = ntree, RMSE = model$results$RMSE))
+  }
+  # Find the ntree value with the lowest RMSE
+  best_ntree <- results[which.min(results$RMSE), "ntree"]
+  cat("Millor ntree: ",best_ntree)
+  # Estimem p_i(X_i) = P(D_i = 1 | X_i)
+  model_rf <- randomForest(D ~ age35+lic_age15 + parking_yes + BMzones + power100+woman, data =dd, ntree = best_ntree)
+  
+  dd[,"pred_rf"] <- predict(model_rf, newdata = dd, type = "response")
+  
+  dd[,"w_rf"] <- (1 / mean_D) * ((dd[,"D"] - dd[,"pred_rf"]) / (1 - dd[,"pred_rf"]))
+  
+  ATT_2_rf = sum(dd[,"w_rf"]*(dd[,"Y2"] - dd[,"Y1"]))
+  
+  var_ATT_2_rf <- sum((dd[,"w_rf"])^2 * (var(dd[,"Y1"])+var(dd[,"Y2"])-2*cov(dd[,"Y1"], dd[,"Y2"])))
+  sd_ATT_2_rf <- sqrt(var_ATT_2_rf)
+  t_stat_rf <- ATT_2_rf / sd_ATT_2_rf
+  # Two-tailed test
+  p_value_rf <- 2 * (1 - pt(abs(t_stat_rf), df))
+  CI_lower_rf <- ATT_2_rf - t_critical * sd_ATT_2_rf
+  CI_upper_rf <- ATT_2_rf + t_critical * sd_ATT_2_rf
+  # One_tailed test
+  direction <- ifelse(ATT_2_rf >0, ">", "<")
+  if (direction == '>') {
+    p_value_rf_o <- 1 - pt(t_stat_rf, df)  
+    CI_lower_rf_o <- ATT_2_rf - t_critical_o * sd_ATT_2_rf
+    CI_upper_rf_o <- Inf
+  } else {
+    p_value_rf_o <- pt(t_stat_rf, df) 
+    CI_lower_rf_o <- -Inf  # Negative infinity for less than
+    CI_upper_rf_o <- ATT_2_rf + t_critical_o * sd_ATT_2_rf
+  }
+    return(list(ATT_2_rf = ATT_2_rf,sd_ATT_2_rf=sd_ATT_2_rf,t_stat_rf = t_stat_rf,
+          p_value_rf=p_value_rf,CI_lower_rf=CI_lower_rf,CI_upper_rf=CI_upper_rf,
+          p_value_rf_o=p_value_rf_o,CI_lower_rf_o=CI_lower_rf_o,CI_upper_rf_o=CI_upper_rf_o,
+          best_ntree = best_ntree))
+}
+```
+
+
+```{r, warning = FALSE}
+logit <- semiparametric_logit(data1c_tot_red, df)
+tree <- semiparametric_tree(data1c_tot_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+rf <- semiparametric_rf(data1c_tot_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+
+# Resultats: 
+res_semi_tot1<-cbind(ATT_2 = c(logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf, logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf), sd = c(logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf, logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf), t_stat = c(logit$t_stat, tree$t_stat_tree, rf$t_stat_rf, logit$t_stat, tree$t_stat_tree, rf$t_stat_rf), p_value = c(logit$p_value, tree$p_value_tree, rf$p_value_rf, logit$p_value_o, tree$p_value_tree_o, rf$p_value_rf_o), CI_lower = c(logit$CI_lower, tree$CI_lower_tree, rf$CI_lower_rf, logit$CI_lower_o, tree$CI_lower_tree_o, rf$CI_lower_rf_o), CI_upper = c(logit$CI_upper, tree$CI_upper_tree, rf$CI_upper_rf, logit$CI_upper_o, tree$CI_upper_tree_o, rf$CI_upper_rf_o))
+rownames(res_semi_tot1) <- c("Logit 2-tails", "Tree 2-tails", "Random Forest 2-tails", "Logit 1-tail", "Tree 1-tail", "Random Forest 1-tail")
+
+knitr::kable(res_semi_tot1,digits=4, caption="IWE for Total variable filtering by age35")
+```
+
+##### Filtratge per "woman"
+
+
+```{r}
+# Seleccionem només el conjunt de dades que ens interessa
+data1c_tot_red <- data1c[data1c$woman == 1,]
+
+# Yi1 = Km totals en t = 1 / Yi2 = Km totals en t = 2
+data1c_tot_red[data1c_tot_red$Time==2, "Y1"] <- data1c_tot_red[data1c_tot_red$Time == 1,"Total"]
+data1c_tot_red[data1c_tot_red$Time==2, "Y2"] <- data1c_tot_red[data1c_tot_red$Time == 2,"Total"]
+
+# Seleccionem només les dades a t = 2
+data1c_tot_red <- data1c_tot_red[data1c_tot_red$Time == 2, ]
+
+n <- nrow(data1c_tot_red)
+df <- n - 1 # graus de llibertat
+
+# Comprovem si el subconjunt de dades obtingut té algun Tr = 1
+cat("Assegurats amb accidents que queden a la mostra: ", sum(data1c_tot_red[data1c_tot_red$Tr == 1,"Tr"]))
+```
+
+```{r, warning = FALSE}
+logit <- semiparametric_logit(data1c_tot_red, df)
+tree <- semiparametric_tree(data1c_tot_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+rf <- semiparametric_rf(data1c_tot_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+
+# Resultats: 
+res_semi_tot2<-cbind(ATT_2 = c(logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf, logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf), sd = c(logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf, logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf), t_stat = c(logit$t_stat, tree$t_stat_tree, rf$t_stat_rf, logit$t_stat, tree$t_stat_tree, rf$t_stat_rf), p_value = c(logit$p_value, tree$p_value_tree, rf$p_value_rf, logit$p_value_o, tree$p_value_tree_o, rf$p_value_rf_o), CI_lower = c(logit$CI_lower, tree$CI_lower_tree, rf$CI_lower_rf, logit$CI_lower_o, tree$CI_lower_tree_o, rf$CI_lower_rf_o), CI_upper = c(logit$CI_upper, tree$CI_upper_tree, rf$CI_upper_rf, logit$CI_upper_o, tree$CI_upper_tree_o, rf$CI_upper_rf_o))
+rownames(res_semi_tot2) <- c("Logit 2-tails", "Tree 2-tails", "Random Forest 2-tails", "Logit 1-tail", "Tree 1-tail", "Random Forest 1-tail")
+
+knitr::kable(res_semi_tot2,digits=4, caption="IWE for Total variable filtering by woman")
+```
+
+
+##### Filtratge per "age35" i "woman"
+
+
+```{r}
+# Seleccionem només el conjunt de dades que ens interessa
+data1c_tot_red <- data1c[data1c$age35 == 1 & data1c$woman == 1,]
+
+# Yi1 = Km totals en t = 1 / Yi2 = Km totals en t = 2
+data1c_tot_red[data1c_tot_red$Time==2, "Y1"] <- data1c_tot_red[data1c_tot_red$Time == 1,"Total"]
+data1c_tot_red[data1c_tot_red$Time==2, "Y2"] <- data1c_tot_red[data1c_tot_red$Time == 2,"Total"]
+
+# Seleccionem només les dades a t = 2
+data1c_tot_red <- data1c_tot_red[data1c_tot_red$Time == 2, ]
+
+n <- nrow(data1c_tot_red)
+df <- n - 1 # graus de llibertat
+
+# Comprovem si el subconjunt de dades obtingut té algun Tr = 1
+cat("Assegurats amb accidents que queden a la mostra: ", sum(data1c_tot_red[data1c_tot_red$Tr == 1,"Tr"]))
+```
+
+```{r, warning = FALSE}
+logit <- semiparametric_logit(data1c_tot_red, df)
+tree <- semiparametric_tree(data1c_tot_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+rf <- semiparametric_rf(data1c_tot_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+
+# Resultats: 
+res_semi_tot3<-cbind(ATT_2 = c(logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf, logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf), sd = c(logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf, logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf), t_stat = c(logit$t_stat, tree$t_stat_tree, rf$t_stat_rf, logit$t_stat, tree$t_stat_tree, rf$t_stat_rf), p_value = c(logit$p_value, tree$p_value_tree, rf$p_value_rf, logit$p_value_o, tree$p_value_tree_o, rf$p_value_rf_o), CI_lower = c(logit$CI_lower, tree$CI_lower_tree, rf$CI_lower_rf, logit$CI_lower_o, tree$CI_lower_tree_o, rf$CI_lower_rf_o), CI_upper = c(logit$CI_upper, tree$CI_upper_tree, rf$CI_upper_rf, logit$CI_upper_o, tree$CI_upper_tree_o, rf$CI_upper_rf_o))
+rownames(res_semi_tot3) <- c("Logit 2-tails", "Tree 2-tails", "Random Forest 2-tails", "Logit 1-tail", "Tree 1-tail", "Random Forest 1-tail")
+
+knitr::kable(res_semi_tot3,digits=4, caption="IWE for Total variable filtering by age35 and woman")
+```
+
+#### Variable Night amb l'efecte de covariables
+
+Per a aquesta variable dependent els resultats obtinguts amb el model TWFE mostraven que l'$ATT_2$ del model era no significatiu i molt proper a 0, mentre només 1 variable, `power100`, surtia com a rellevant en el model, mostrant aquesta un efecte del tractament no significatiu. Els resultats per a aquest nou model han canviat de forma significativa en obtenir un $ATT_2$ positiu i significatiu al filtrar per la variable `power100`.
+
+##### Filtratge per "power100"
+
+```{r}
+# Seleccionem només el conjunt de dades que ens interessa
+data1c_nig_red <- data1c[data1c$power100 == 1,]
+
+# Yi1 = Km totals en t = 1 / Yi2 = Km totals en t = 2
+data1c_nig_red[data1c_nig_red$Time==2, "Y1"] <- data1c_nig_red[data1c_nig_red$Time == 1,"Total"]
+data1c_nig_red[data1c_nig_red$Time==2, "Y2"] <- data1c_nig_red[data1c_nig_red$Time == 2,"Total"]
+
+# Seleccionem només les dades a t = 2
+data1c_nig_red <- data1c_nig_red[data1c_nig_red$Time == 2, ]
+
+n <- nrow(data1c_nig_red)
+df <- n - 1 # graus de llibertat
+
+# Comprovem si el subconjunt de dades obtingut té algun Tr = 1
+cat("Assegurats amb accidents que queden a la mostra: ", sum(data1c_nig_red[data1c_nig_red$Tr == 1,"Tr"]))
+```
+
+```{r, warning = FALSE}
+logit <- semiparametric_logit(data1c_nig_red, df)
+tree <- semiparametric_tree(data1c_nig_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+rf <- semiparametric_rf(data1c_nig_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+
+# Resultats: 
+res_semi_nig1<-cbind(ATT_2 = c(logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf, logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf), sd = c(logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf, logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf), t_stat = c(logit$t_stat, tree$t_stat_tree, rf$t_stat_rf, logit$t_stat, tree$t_stat_tree, rf$t_stat_rf), p_value = c(logit$p_value, tree$p_value_tree, rf$p_value_rf, logit$p_value_o, tree$p_value_tree_o, rf$p_value_rf_o), CI_lower = c(logit$CI_lower, tree$CI_lower_tree, rf$CI_lower_rf, logit$CI_lower_o, tree$CI_lower_tree_o, rf$CI_lower_rf_o), CI_upper = c(logit$CI_upper, tree$CI_upper_tree, rf$CI_upper_rf, logit$CI_upper_o, tree$CI_upper_tree_o, rf$CI_upper_rf_o))
+rownames(res_semi_nig1) <- c("Logit 2-tails", "Tree 2-tails", "Random Forest 2-tails", "Logit 1-tail", "Tree 1-tail", "Random Forest 1-tail")
+
+knitr::kable(res_semi_nig1,digits=4, caption="IWE for Night variable filtering by power100")
+```
+
+#### Variable Speed amb l'efecte de covariables
+
+En aquest cas el model TWFE amb variable constants en el temps ha deixat veure que l'efecte del tractament era no significatiu però que 3 de les seves variables sí que presentaven una interacció amb un $ATT_2$ significatiu: `age35`, `lic_age15` i `power100`. El primer efecte era negatiu mentre els dos segons positius. Amb els models IWE realitzats a continuació es pot notar que filtrar únicament per 1 variable dona lloc a obtenir pvalors més propers a ser significatius. Concretament, filtrar per la variable `lic_age15` és el que ha donat lloc a resultats més llunyants del $0.05\%$, seguit per `power100` i finalment `age35`, la qual de fet presenta un efecte del tractament significatiu i negatiu, com anteriorment. Aquest efecte és únicament significatiu amb els resultats obtinguts a 1 cua. De fet, en tots els cassos podem notar com la significació (pvalor) es divideix aproximadament per 2 en passar dels resultats de 2 cues a 1 cua. La última sentència afirma que és necessari treballar amb aquest tipus d'inferència.
+
+##### Filtratge per "age35"
+
+```{r}
+# Seleccionem només el conjunt de dades que ens interessa
+data1c_spe_red <- data1c[data1c$age35 == 1,]
+
+# Yi1 = percentatge Speed en t = 1 / Yi2 = percentatge Speed en t = 2
+data1c_spe_red[data1c_spe_red$Time==2, "Y1"] <- data1c_spe_red[data1c_spe_red$Time == 1,"Speed"]
+data1c_spe_red[data1c_spe_red$Time==2, "Y2"] <- data1c_spe_red[data1c_spe_red$Time == 2,"Speed"]
+
+# Seleccionem només les dades a t = 2
+data1c_spe_red <- data1c_spe_red[data1c_spe_red$Time == 2, ]
+
+n <- nrow(data1c_spe_red)
+df <- n - 1 # graus de llibertat
+
+# Comprovem si el subconjunt de dades obtingut té algun Tr = 1
+cat("Assegurats amb accidents que queden a la mostra: ", sum(data1c_spe_red[data1c_spe_red$Tr == 1,"Tr"]))
+```
+
+```{r, warning = FALSE}
+logit <- semiparametric_logit(data1c_spe_red, df)
+tree <- semiparametric_tree(data1c_spe_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+rf <- semiparametric_rf(data1c_spe_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+
+# Resultats: 
+res_semi_spe1<-cbind(ATT_2 = c(logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf, logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf), sd = c(logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf, logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf), t_stat = c(logit$t_stat, tree$t_stat_tree, rf$t_stat_rf, logit$t_stat, tree$t_stat_tree, rf$t_stat_rf), p_value = c(logit$p_value, tree$p_value_tree, rf$p_value_rf, logit$p_value_o, tree$p_value_tree_o, rf$p_value_rf_o), CI_lower = c(logit$CI_lower, tree$CI_lower_tree, rf$CI_lower_rf, logit$CI_lower_o, tree$CI_lower_tree_o, rf$CI_lower_rf_o), CI_upper = c(logit$CI_upper, tree$CI_upper_tree, rf$CI_upper_rf, logit$CI_upper_o, tree$CI_upper_tree_o, rf$CI_upper_rf_o))
+rownames(res_semi_spe1) <- c("Logit 2-tails", "Tree 2-tails", "Random Forest 2-tails", "Logit 1-tail", "Tree 1-tail", "Random Forest 1-tail")
+
+knitr::kable(res_semi_spe1,digits=4, caption="IWE for Speed variable filtering by age35")
+```
+
+##### Filtratge per "lic_age15"
+
+```{r}
+# Seleccionem només el conjunt de dades que ens interessa
+data1c_spe_red <- data1c[data1c$lic_age15 == 1,]
+
+# Yi1 = percentatge Speed en t = 1 / Yi2 = percentatge Speed en t = 2
+data1c_spe_red[data1c_spe_red$Time==2, "Y1"] <- data1c_spe_red[data1c_spe_red$Time == 1,"Speed"]
+data1c_spe_red[data1c_spe_red$Time==2, "Y2"] <- data1c_spe_red[data1c_spe_red$Time == 2,"Speed"]
+
+# Seleccionem només les dades a t = 2
+data1c_spe_red <- data1c_spe_red[data1c_spe_red$Time == 2, ]
+
+n <- nrow(data1c_spe_red)
+df <- n - 1 # graus de llibertat
+
+# Comprovem si el subconjunt de dades obtingut té algun Tr = 1
+cat("Assegurats amb accidents que queden a la mostra: ", sum(data1c_spe_red[data1c_spe_red$Tr == 1,"Tr"]))
+```
+
+```{r, warning = FALSE}
+logit <- semiparametric_logit(data1c_spe_red, df)
+tree <- semiparametric_tree(data1c_spe_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+rf <- semiparametric_rf(data1c_spe_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+
+# Resultats: 
+res_semi_spe2<-cbind(ATT_2 = c(logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf, logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf), sd = c(logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf, logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf), t_stat = c(logit$t_stat, tree$t_stat_tree, rf$t_stat_rf, logit$t_stat, tree$t_stat_tree, rf$t_stat_rf), p_value = c(logit$p_value, tree$p_value_tree, rf$p_value_rf, logit$p_value_o, tree$p_value_tree_o, rf$p_value_rf_o), CI_lower = c(logit$CI_lower, tree$CI_lower_tree, rf$CI_lower_rf, logit$CI_lower_o, tree$CI_lower_tree_o, rf$CI_lower_rf_o), CI_upper = c(logit$CI_upper, tree$CI_upper_tree, rf$CI_upper_rf, logit$CI_upper_o, tree$CI_upper_tree_o, rf$CI_upper_rf_o))
+rownames(res_semi_spe2) <- c("Logit 2-tails", "Tree 2-tails", "Random Forest 2-tails", "Logit 1-tail", "Tree 1-tail", "Random Forest 1-tail")
+
+knitr::kable(res_semi_spe2,digits=4, caption="IWE for Speed variable filtering by lic_age15")
+```
+
+##### Filtratge per "power100"
+
+```{r}
+# Seleccionem només el conjunt de dades que ens interessa
+data1c_spe_red <- data1c[data1c$power100 == 1,]
+
+# Yi1 = percentatge Speed en t = 1 / Yi2 = percentatge Speed en t = 2
+data1c_spe_red[data1c_spe_red$Time==2, "Y1"] <- data1c_spe_red[data1c_spe_red$Time == 1,"Speed"]
+data1c_spe_red[data1c_spe_red$Time==2, "Y2"] <- data1c_spe_red[data1c_spe_red$Time == 2,"Speed"]
+
+# Seleccionem només les dades a t = 2
+data1c_spe_red <- data1c_spe_red[data1c_spe_red$Time == 2, ]
+
+n <- nrow(data1c_spe_red)
+df <- n - 1 # graus de llibertat
+
+# Comprovem si el subconjunt de dades obtingut té algun Tr = 1
+cat("Assegurats amb accidents que queden a la mostra: ", sum(data1c_spe_red[data1c_spe_red$Tr == 1,"Tr"]))
+```
+
+```{r, warning = FALSE}
+logit <- semiparametric_logit(data1c_spe_red, df)
+tree <- semiparametric_tree(data1c_spe_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+rf <- semiparametric_rf(data1c_spe_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+
+# Resultats: 
+res_semi_spe3<-cbind(ATT_2 = c(logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf, logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf), sd = c(logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf, logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf), t_stat = c(logit$t_stat, tree$t_stat_tree, rf$t_stat_rf, logit$t_stat, tree$t_stat_tree, rf$t_stat_rf), p_value = c(logit$p_value, tree$p_value_tree, rf$p_value_rf, logit$p_value_o, tree$p_value_tree_o, rf$p_value_rf_o), CI_lower = c(logit$CI_lower, tree$CI_lower_tree, rf$CI_lower_rf, logit$CI_lower_o, tree$CI_lower_tree_o, rf$CI_lower_rf_o), CI_upper = c(logit$CI_upper, tree$CI_upper_tree, rf$CI_upper_rf, logit$CI_upper_o, tree$CI_upper_tree_o, rf$CI_upper_rf_o))
+rownames(res_semi_spe3) <- c("Logit 2-tails", "Tree 2-tails", "Random Forest 2-tails", "Logit 1-tail", "Tree 1-tail", "Random Forest 1-tail")
+
+knitr::kable(res_semi_spe3,digits=4, caption="IWE for Speed variable filtering by power100")
+```
+
+##### Filtratge per "age35" i "lic_age15"
+
+```{r}
+# Seleccionem només el conjunt de dades que ens interessa
+data1c_spe_red <- data1c[data1c$age35 == 1 & data1c$lic_age15 == 1,]
+
+# Yi1 = percentatge Speed en t = 1 / Yi2 = percentatge Speed en t = 2
+data1c_spe_red[data1c_spe_red$Time==2, "Y1"] <- data1c_spe_red[data1c_spe_red$Time == 1,"Speed"]
+data1c_spe_red[data1c_spe_red$Time==2, "Y2"] <- data1c_spe_red[data1c_spe_red$Time == 2,"Speed"]
+
+# Seleccionem només les dades a t = 2
+data1c_spe_red <- data1c_spe_red[data1c_spe_red$Time == 2, ]
+
+n <- nrow(data1c_spe_red)
+df <- n - 1 # graus de llibertat
+
+# Comprovem si el subconjunt de dades obtingut té algun Tr = 1
+cat("Assegurats amb accidents que queden a la mostra: ", sum(data1c_spe_red[data1c_spe_red$Tr == 1,"Tr"]))
+```
+
+```{r, warning = FALSE}
+logit <- semiparametric_logit(data1c_spe_red, df)
+tree <- semiparametric_tree(data1c_spe_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+rf <- semiparametric_rf(data1c_spe_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+
+# Resultats: 
+res_semi_spe4<-cbind(ATT_2 = c(logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf, logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf), sd = c(logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf, logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf), t_stat = c(logit$t_stat, tree$t_stat_tree, rf$t_stat_rf, logit$t_stat, tree$t_stat_tree, rf$t_stat_rf), p_value = c(logit$p_value, tree$p_value_tree, rf$p_value_rf, logit$p_value_o, tree$p_value_tree_o, rf$p_value_rf_o), CI_lower = c(logit$CI_lower, tree$CI_lower_tree, rf$CI_lower_rf, logit$CI_lower_o, tree$CI_lower_tree_o, rf$CI_lower_rf_o), CI_upper = c(logit$CI_upper, tree$CI_upper_tree, rf$CI_upper_rf, logit$CI_upper_o, tree$CI_upper_tree_o, rf$CI_upper_rf_o))
+rownames(res_semi_spe4) <- c("Logit 2-tails", "Tree 2-tails", "Random Forest 2-tails", "Logit 1-tail", "Tree 1-tail", "Random Forest 1-tail")
+
+knitr::kable(res_semi_spe4,digits=4, caption="IWE for Speed variable filtering by age35 and lic_age15")
+```
+
+##### Filtratge per "age35" i "power100"
+
+```{r}
+# Seleccionem només el conjunt de dades que ens interessa
+data1c_spe_red <- data1c[data1c$age35 == 1 & data1c$power100 == 1,]
+
+# Yi1 = percentatge Speed en t = 1 / Yi2 = percentatge Speed en t = 2
+data1c_spe_red[data1c_spe_red$Time==2, "Y1"] <- data1c_spe_red[data1c_spe_red$Time == 1,"Speed"]
+data1c_spe_red[data1c_spe_red$Time==2, "Y2"] <- data1c_spe_red[data1c_spe_red$Time == 2,"Speed"]
+
+# Seleccionem només les dades a t = 2
+data1c_spe_red <- data1c_spe_red[data1c_spe_red$Time == 2, ]
+
+n <- nrow(data1c_spe_red)
+df <- n - 1 # graus de llibertat
+
+# Comprovem si el subconjunt de dades obtingut té algun Tr = 1
+cat("Assegurats amb accidents que queden a la mostra: ", sum(data1c_spe_red[data1c_spe_red$Tr == 1,"Tr"]))
+```
+
+```{r, warning = FALSE}
+logit <- semiparametric_logit(data1c_spe_red, df)
+tree <- semiparametric_tree(data1c_spe_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+rf <- semiparametric_rf(data1c_spe_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+
+# Resultats: 
+res_semi_spe5<-cbind(ATT_2 = c(logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf, logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf), sd = c(logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf, logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf), t_stat = c(logit$t_stat, tree$t_stat_tree, rf$t_stat_rf, logit$t_stat, tree$t_stat_tree, rf$t_stat_rf), p_value = c(logit$p_value, tree$p_value_tree, rf$p_value_rf, logit$p_value_o, tree$p_value_tree_o, rf$p_value_rf_o), CI_lower = c(logit$CI_lower, tree$CI_lower_tree, rf$CI_lower_rf, logit$CI_lower_o, tree$CI_lower_tree_o, rf$CI_lower_rf_o), CI_upper = c(logit$CI_upper, tree$CI_upper_tree, rf$CI_upper_rf, logit$CI_upper_o, tree$CI_upper_tree_o, rf$CI_upper_rf_o))
+rownames(res_semi_spe5) <- c("Logit 2-tails", "Tree 2-tails", "Random Forest 2-tails", "Logit 1-tail", "Tree 1-tail", "Random Forest 1-tail")
+
+knitr::kable(res_semi_spe5,digits=4, caption="IWE for Speed variable filtering by age35 and power100")
+```
+
+##### Filtratge per "lic_age15" i "power100"
+
+```{r}
+# Seleccionem només el conjunt de dades que ens interessa
+data1c_spe_red <- data1c[data1c$lic_age15 == 1 & data1c$power100 == 1,]
+
+# Yi1 = percentatge Speed en t = 1 / Yi2 = percentatge Speed en t = 2
+data1c_spe_red[data1c_spe_red$Time==2, "Y1"] <- data1c_spe_red[data1c_spe_red$Time == 1,"Speed"]
+data1c_spe_red[data1c_spe_red$Time==2, "Y2"] <- data1c_spe_red[data1c_spe_red$Time == 2,"Speed"]
+
+# Seleccionem només les dades a t = 2
+data1c_spe_red <- data1c_spe_red[data1c_spe_red$Time == 2, ]
+
+n <- nrow(data1c_spe_red)
+df <- n - 1 # graus de llibertat
+
+# Comprovem si el subconjunt de dades obtingut té algun Tr = 1
+cat("Assegurats amb accidents que queden a la mostra: ", sum(data1c_spe_red[data1c_spe_red$Tr == 1,"Tr"]))
+```
+
+```{r, warning = FALSE}
+logit <- semiparametric_logit(data1c_spe_red, df)
+tree <- semiparametric_tree(data1c_spe_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+rf <- semiparametric_rf(data1c_spe_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+
+# Resultats: 
+res_semi_spe6<-cbind(ATT_2 = c(logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf, logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf), sd = c(logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf, logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf), t_stat = c(logit$t_stat, tree$t_stat_tree, rf$t_stat_rf, logit$t_stat, tree$t_stat_tree, rf$t_stat_rf), p_value = c(logit$p_value, tree$p_value_tree, rf$p_value_rf, logit$p_value_o, tree$p_value_tree_o, rf$p_value_rf_o), CI_lower = c(logit$CI_lower, tree$CI_lower_tree, rf$CI_lower_rf, logit$CI_lower_o, tree$CI_lower_tree_o, rf$CI_lower_rf_o), CI_upper = c(logit$CI_upper, tree$CI_upper_tree, rf$CI_upper_rf, logit$CI_upper_o, tree$CI_upper_tree_o, rf$CI_upper_rf_o))
+rownames(res_semi_spe6) <- c("Logit 2-tails", "Tree 2-tails", "Random Forest 2-tails", "Logit 1-tail", "Tree 1-tail", "Random Forest 1-tail")
+
+knitr::kable(res_semi_spe6,digits=4, caption="IWE for Speed variable filtering by lic_age15 and power100")
+```
+
+##### Filtratge per "age35", "lic_age15" i "power100"
+
+```{r}
+# Seleccionem només el conjunt de dades que ens interessa
+data1c_spe_red <- data1c[data1c$age35 == 1 & data1c$lic_age15 == 1 & data1c$power100 == 1,]
+
+# Yi1 = percentatge Speed en t = 1 / Yi2 = percentatge Speed en t = 2
+data1c_spe_red[data1c_spe_red$Time==2, "Y1"] <- data1c_spe_red[data1c_spe_red$Time == 1,"Speed"]
+data1c_spe_red[data1c_spe_red$Time==2, "Y2"] <- data1c_spe_red[data1c_spe_red$Time == 2,"Speed"]
+
+# Seleccionem només les dades a t = 2
+data1c_spe_red <- data1c_spe_red[data1c_spe_red$Time == 2, ]
+
+n <- nrow(data1c_spe_red)
+df <- n - 1 # graus de llibertat
+
+# Comprovem si el subconjunt de dades obtingut té algun Tr = 1
+cat("Assegurats amb accidents que queden a la mostra: ", sum(data1c_spe_red[data1c_spe_red$Tr == 1,"Tr"]))
+```
+
+```{r, warning = FALSE}
+logit <- semiparametric_logit(data1c_spe_red, df)
+tree <- semiparametric_tree(data1c_spe_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+rf <- semiparametric_rf(data1c_spe_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+
+# Resultats: 
+res_semi_spe7<-cbind(ATT_2 = c(logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf, logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf), sd = c(logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf, logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf), t_stat = c(logit$t_stat, tree$t_stat_tree, rf$t_stat_rf, logit$t_stat, tree$t_stat_tree, rf$t_stat_rf), p_value = c(logit$p_value, tree$p_value_tree, rf$p_value_rf, logit$p_value_o, tree$p_value_tree_o, rf$p_value_rf_o), CI_lower = c(logit$CI_lower, tree$CI_lower_tree, rf$CI_lower_rf, logit$CI_lower_o, tree$CI_lower_tree_o, rf$CI_lower_rf_o), CI_upper = c(logit$CI_upper, tree$CI_upper_tree, rf$CI_upper_rf, logit$CI_upper_o, tree$CI_upper_tree_o, rf$CI_upper_rf_o))
+rownames(res_semi_spe7) <- c("Logit 2-tails", "Tree 2-tails", "Random Forest 2-tails", "Logit 1-tail", "Tree 1-tail", "Random Forest 1-tail")
+
+knitr::kable(res_semi_spe7,digits=4, caption="IWE for Speed variable filtering by age35, lic_age15 and power100")
+```
+
+#### Variable Urban amb l'efecte de covariables
+
+Finalment per a la variable `Urban` anteriorment s'havia obtingut un efecte del tractament de -2 i significatiu mentre les variables `lic_age15` i `woman` són les que es presentaven com a rellevants en el model, totes dues amb un $ATT_2$ no significatiu. Amb els models semiparamètrics l'efecte del tractament passa a ser no significatiu en tots els cassos, sent el filtratge de la variable `woman` el que es troba més proper de ser-ho. 
+
+En general notem que el model semiparamètric dona lloc a resultats generalment no significatius. Pel que a fa a les diferents maneres de construir el model, no es pot concloure quina és la millor, en mostrar pvalors majors o inferiors respecte als altres mètodes en funció del filtratge. Pel cas de la variable `Urban`, el model construit a partir d'un random forest és el que dona lloc a pvalors menors, però això no conclou res ja que per exemple per a la variable `Total` era el tree el que donava lloc a menors pvalors, mentre pel cas de `Night` els resultats varien de forma significativa en funció del filtratge.
+
+##### Filtratge per "lic_age15"
+
+```{r}
+# Seleccionem només el conjunt de dades que ens interessa
+data1c_urb_red <- data1c[data1c$lic_age15 == 1,]
+
+# Yi1 = percentatge Speed en t = 1 / Yi2 = percentatge Speed en t = 2
+data1c_urb_red[data1c_urb_red$Time==2, "Y1"] <- data1c_urb_red[data1c_urb_red$Time == 1,"Speed"]
+data1c_urb_red[data1c_urb_red$Time==2, "Y2"] <- data1c_urb_red[data1c_urb_red$Time == 2,"Speed"]
+
+# Seleccionem només les dades a t = 2
+data1c_urb_red <- data1c_urb_red[data1c_urb_red$Time == 2, ]
+
+n <- nrow(data1c_urb_red)
+df <- n - 1 # graus de llibertat
+
+# Comprovem si el subconjunt de dades obtingut té algun Tr = 1
+cat("Assegurats amb accidents que queden a la mostra: ", sum(data1c_urb_red[data1c_urb_red$Tr == 1,"Tr"]))
+```
+
+```{r, warning = FALSE}
+logit <- semiparametric_logit(data1c_urb_red, df)
+tree <- semiparametric_tree(data1c_urb_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+rf <- semiparametric_rf(data1c_urb_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+
+# Resultats: 
+res_semi_urb1<-cbind(ATT_2 = c(logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf, logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf), sd = c(logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf, logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf), t_stat = c(logit$t_stat, tree$t_stat_tree, rf$t_stat_rf, logit$t_stat, tree$t_stat_tree, rf$t_stat_rf), p_value = c(logit$p_value, tree$p_value_tree, rf$p_value_rf, logit$p_value_o, tree$p_value_tree_o, rf$p_value_rf_o), CI_lower = c(logit$CI_lower, tree$CI_lower_tree, rf$CI_lower_rf, logit$CI_lower_o, tree$CI_lower_tree_o, rf$CI_lower_rf_o), CI_upper = c(logit$CI_upper, tree$CI_upper_tree, rf$CI_upper_rf, logit$CI_upper_o, tree$CI_upper_tree_o, rf$CI_upper_rf_o))
+rownames(res_semi_urb1) <- c("Logit 2-tails", "Tree 2-tails", "Random Forest 2-tails", "Logit 1-tail", "Tree 1-tail", "Random Forest 1-tail")
+
+knitr::kable(res_semi_urb1,digits=4, caption="IWE for Urban variable filtering by lic_age15")
+```
+
+##### Filtratge per "woman"
+
+```{r}
+# Seleccionem només el conjunt de dades que ens interessa
+data1c_urb_red <- data1c[data1c$woman == 1,]
+
+# Yi1 = percentatge Speed en t = 1 / Yi2 = percentatge Speed en t = 2
+data1c_urb_red[data1c_urb_red$Time==2, "Y1"] <- data1c_urb_red[data1c_urb_red$Time == 1,"Speed"]
+data1c_urb_red[data1c_urb_red$Time==2, "Y2"] <- data1c_urb_red[data1c_urb_red$Time == 2,"Speed"]
+
+# Seleccionem només les dades a t = 2
+data1c_urb_red <- data1c_urb_red[data1c_urb_red$Time == 2, ]
+
+n <- nrow(data1c_urb_red)
+df <- n - 1 # graus de llibertat
+
+# Comprovem si el subconjunt de dades obtingut té algun Tr = 1
+cat("Assegurats amb accidents que queden a la mostra: ", sum(data1c_urb_red[data1c_urb_red$Tr == 1,"Tr"]))
+```
+
+```{r, warning = FALSE}
+logit <- semiparametric_logit(data1c_urb_red, df)
+tree <- semiparametric_tree(data1c_urb_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+rf <- semiparametric_rf(data1c_urb_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+
+# Resultats: 
+res_semi_urb2<-cbind(ATT_2 = c(logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf, logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf), sd = c(logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf, logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf), t_stat = c(logit$t_stat, tree$t_stat_tree, rf$t_stat_rf, logit$t_stat, tree$t_stat_tree, rf$t_stat_rf), p_value = c(logit$p_value, tree$p_value_tree, rf$p_value_rf, logit$p_value_o, tree$p_value_tree_o, rf$p_value_rf_o), CI_lower = c(logit$CI_lower, tree$CI_lower_tree, rf$CI_lower_rf, logit$CI_lower_o, tree$CI_lower_tree_o, rf$CI_lower_rf_o), CI_upper = c(logit$CI_upper, tree$CI_upper_tree, rf$CI_upper_rf, logit$CI_upper_o, tree$CI_upper_tree_o, rf$CI_upper_rf_o))
+rownames(res_semi_urb2) <- c("Logit 2-tails", "Tree 2-tails", "Random Forest 2-tails", "Logit 1-tail", "Tree 1-tail", "Random Forest 1-tail")
+
+knitr::kable(res_semi_urb2,digits=4, caption="IWE for Urban variable filtering by woman")
+```
+
+##### Filtratge per "lic_age15" i "woman"
+
+
+```{r}
+# Seleccionem només el conjunt de dades que ens interessa
+data1c_urb_red <- data1c[data1c$lic_age15 == 1 & data1c$woman == 1,]
+
+# Yi1 = percentatge Speed en t = 1 / Yi2 = percentatge Speed en t = 2
+data1c_urb_red[data1c_urb_red$Time==2, "Y1"] <- data1c_urb_red[data1c_urb_red$Time == 1,"Speed"]
+data1c_urb_red[data1c_urb_red$Time==2, "Y2"] <- data1c_urb_red[data1c_urb_red$Time == 2,"Speed"]
+
+# Seleccionem només les dades a t = 2
+data1c_urb_red <- data1c_urb_red[data1c_urb_red$Time == 2, ]
+
+n <- nrow(data1c_urb_red)
+df <- n - 1 # graus de llibertat
+
+# Comprovem si el subconjunt de dades obtingut té algun Tr = 1
+cat("Assegurats amb accidents que queden a la mostra: ", sum(data1c_urb_red[data1c_urb_red$Tr == 1,"Tr"]))
+```
+
+```{r, warning = FALSE}
+logit <- semiparametric_logit(data1c_urb_red, df)
+tree <- semiparametric_tree(data1c_urb_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+rf <- semiparametric_rf(data1c_urb_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+
+# Resultats: 
+res_semi_urb3<-cbind(ATT_2 = c(logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf, logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf), sd = c(logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf, logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf), t_stat = c(logit$t_stat, tree$t_stat_tree, rf$t_stat_rf, logit$t_stat, tree$t_stat_tree, rf$t_stat_rf), p_value = c(logit$p_value, tree$p_value_tree, rf$p_value_rf, logit$p_value_o, tree$p_value_tree_o, rf$p_value_rf_o), CI_lower = c(logit$CI_lower, tree$CI_lower_tree, rf$CI_lower_rf, logit$CI_lower_o, tree$CI_lower_tree_o, rf$CI_lower_rf_o), CI_upper = c(logit$CI_upper, tree$CI_upper_tree, rf$CI_upper_rf, logit$CI_upper_o, tree$CI_upper_tree_o, rf$CI_upper_rf_o))
+rownames(res_semi_urb3) <- c("Logit 2-tails", "Tree 2-tails", "Random Forest 2-tails", "Logit 1-tail", "Tree 1-tail", "Random Forest 1-tail")
+
+knitr::kable(res_semi_urb3,digits=4, caption="IWE for Urban variable filtering by lic_age15 and woman")
+```
+
+### Models semi-paramètrics (IWE) amb dades balancejades
+
+La conclusió de la secció anterior ha estat que no es poden treure resultats significatius principalment perquè les dades es troben molt desbalancejades. Així doncs, a continuació es mirarà què passaria si es treballès amb dades balancejades. S'utilitzarà una tècnica de submostreig per a obtenir el nou conjunt de dades. És a dir, s'ha reduit el nombre de mostres de la classe majoritaria (el grup control) per igualar-ho al nombre de mostres de la classe minoritaria (el grup tractament). Durant aquest submostreig s'ha de tenir en compte que si s'elimina una persona, s'ha d'eliminar tant la seva fila de t=1 com la de t=2.
+
+Durant el procediment, ja no es mirarà si queden registres amb `Tr=1` a la mostra, perquè anteriorment s'ha vist que sí i no s'ha eliminat cap registre d'aquesta tipologia durant el submostreig. 
+
+```{r}
+set.seed(123)
+# Dividir el dataset en clases mayoritarias y minoritarias
+class_majority <- data1c[data1c$D == 0, ]
+class_minority <- data1c[data1c$D == 1, ]
+
+# Calcular el número de muestras en la clase minoritaria
+n_minority <- nrow(class_minority)
+
+# Submuestreo aleatorio de la clase mayoritaria
+poss <- class_majority$ID
+keep <- sample(poss, n_minority/2)
+class_majority_subsampled <- class_majority[class_majority$ID %in% keep,]
+
+# Combinar el subconjunto balanceado
+data1c_balanced <- rbind(class_majority_subsampled, class_minority)
+```
+
+#### Variable Total amb l'efecte de covariables
+
+Anteriorment s'havia vist que la filtració per la variable `woman` era la que es trobava més propera a mostrar resultats significatius. En aquest cas, aquesta filtració ha donat lloc a un warning, perquè el model random forest únicament dona lloc a 2 possibles respostes per a la variables dependent. Indicant clarament que els models continuen sense diferenciar de forma significativa. Contràriament, en aquest cas la combinació de la filtració de totes dues variables `age35` i `woman` ha estat la que s'ha trobat més propera a mostrar resultats significatius.
+
+Tot i les explicacions anteriors, es pot confirmar que els resultats milloren en comparació als models amb dades desbalancejades, sobretot pel que fa al tree. Anteriorment, al filtrar per `age35` s'obserbava que el model únicament donava lloc a 1 nodes (l'arrel). En aquest cas, s'han creat fins a 29 fulles, indicant que com a mínim en aquest cas la diferenciació és major. Per a les altres filtracions, tot i que no de forma tant significativa, les fulles de l'arbre també han augmentat. 
+
+##### Filtratge per "age35"
+
+```{r, warning = FALSE}
+# Seleccionem només el conjunt de dades que ens interessa
+data1c_tot_red <- data1c_balanced[data1c_balanced$age35 == 1,]
+
+# Yi1 = Km totals en t = 1 / Yi2 = Km totals en t = 2
+data1c_tot_red[data1c_tot_red$Time==2, "Y1"] <- data1c_tot_red[data1c_tot_red$Time == 1,"Total"]
+data1c_tot_red[data1c_tot_red$Time==2, "Y2"] <- data1c_tot_red[data1c_tot_red$Time == 2,"Total"]
+
+# Seleccionem només les dades a t = 2
+data1c_tot_red <- data1c_tot_red[data1c_tot_red$Time == 2, ]
+
+n <- nrow(data1c_tot_red)
+df <- n - 1 # graus de llibertat
+
+logit <- semiparametric_logit(data1c_tot_red, df)
+tree <- semiparametric_tree(data1c_tot_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+rf <- semiparametric_rf(data1c_tot_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+
+# Resultats: 
+res_semi_tot1<-cbind(ATT_2 = c(logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf, logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf), sd = c(logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf, logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf), t_stat = c(logit$t_stat, tree$t_stat_tree, rf$t_stat_rf, logit$t_stat, tree$t_stat_tree, rf$t_stat_rf), p_value = c(logit$p_value, tree$p_value_tree, rf$p_value_rf, logit$p_value_o, tree$p_value_tree_o, rf$p_value_rf_o), CI_lower = c(logit$CI_lower, tree$CI_lower_tree, rf$CI_lower_rf, logit$CI_lower_o, tree$CI_lower_tree_o, rf$CI_lower_rf_o), CI_upper = c(logit$CI_upper, tree$CI_upper_tree, rf$CI_upper_rf, logit$CI_upper_o, tree$CI_upper_tree_o, rf$CI_upper_rf_o))
+rownames(res_semi_tot1) <- c("Logit 2-tails", "Tree 2-tails", "Random Forest 2-tails", "Logit 1-tail", "Tree 1-tail", "Random Forest 1-tail")
+
+knitr::kable(res_semi_tot1,digits=4, caption="IWE for Total variable filtering by age35")
+```
+
+##### Filtratge per "woman"
+
+
+```{r, warning=FALSE}
+# Seleccionem només el conjunt de dades que ens interessa
+data1c_tot_red <- data1c_balanced[data1c_balanced$woman == 1,]
+
+# Yi1 = Km totals en t = 1 / Yi2 = Km totals en t = 2
+data1c_tot_red[data1c_tot_red$Time==2, "Y1"] <- data1c_tot_red[data1c_tot_red$Time == 1,"Total"]
+data1c_tot_red[data1c_tot_red$Time==2, "Y2"] <- data1c_tot_red[data1c_tot_red$Time == 2,"Total"]
+
+# Seleccionem només les dades a t = 2
+data1c_tot_red <- data1c_tot_red[data1c_tot_red$Time == 2, ]
+
+n <- nrow(data1c_tot_red)
+df <- n - 1 # graus de llibertat
+
+logit <- semiparametric_logit(data1c_tot_red, df)
+tree <- semiparametric_tree(data1c_tot_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+rf <- semiparametric_rf(data1c_tot_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+
+# Resultats: 
+res_semi_tot2<-cbind(ATT_2 = c(logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf, logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf), sd = c(logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf, logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf), t_stat = c(logit$t_stat, tree$t_stat_tree, rf$t_stat_rf, logit$t_stat, tree$t_stat_tree, rf$t_stat_rf), p_value = c(logit$p_value, tree$p_value_tree, rf$p_value_rf, logit$p_value_o, tree$p_value_tree_o, rf$p_value_rf_o), CI_lower = c(logit$CI_lower, tree$CI_lower_tree, rf$CI_lower_rf, logit$CI_lower_o, tree$CI_lower_tree_o, rf$CI_lower_rf_o), CI_upper = c(logit$CI_upper, tree$CI_upper_tree, rf$CI_upper_rf, logit$CI_upper_o, tree$CI_upper_tree_o, rf$CI_upper_rf_o))
+rownames(res_semi_tot2) <- c("Logit 2-tails", "Tree 2-tails", "Random Forest 2-tails", "Logit 1-tail", "Tree 1-tail", "Random Forest 1-tail")
+
+knitr::kable(res_semi_tot2,digits=4, caption="IWE for Total variable filtering by woman")
+```
+
+
+##### Filtratge per "age35" i "woman"
+
+
+```{r, warning = FALSE}
+# Seleccionem només el conjunt de dades que ens interessa
+data1c_tot_red <- data1c_balanced[data1c_balanced$age35 == 1 & data1c_balanced$woman == 1,]
+
+# Yi1 = Km totals en t = 1 / Yi2 = Km totals en t = 2
+data1c_tot_red[data1c_tot_red$Time==2, "Y1"] <- data1c_tot_red[data1c_tot_red$Time == 1,"Total"]
+data1c_tot_red[data1c_tot_red$Time==2, "Y2"] <- data1c_tot_red[data1c_tot_red$Time == 2,"Total"]
+
+# Seleccionem només les dades a t = 2
+data1c_tot_red <- data1c_tot_red[data1c_tot_red$Time == 2, ]
+
+n <- nrow(data1c_tot_red)
+df <- n - 1 # graus de llibertat
+
+logit <- semiparametric_logit(data1c_tot_red, df)
+tree <- semiparametric_tree(data1c_tot_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+rf <- semiparametric_rf(data1c_tot_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+
+# Resultats: 
+res_semi_tot3<-cbind(ATT_2 = c(logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf, logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf), sd = c(logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf, logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf), t_stat = c(logit$t_stat, tree$t_stat_tree, rf$t_stat_rf, logit$t_stat, tree$t_stat_tree, rf$t_stat_rf), p_value = c(logit$p_value, tree$p_value_tree, rf$p_value_rf, logit$p_value_o, tree$p_value_tree_o, rf$p_value_rf_o), CI_lower = c(logit$CI_lower, tree$CI_lower_tree, rf$CI_lower_rf, logit$CI_lower_o, tree$CI_lower_tree_o, rf$CI_lower_rf_o), CI_upper = c(logit$CI_upper, tree$CI_upper_tree, rf$CI_upper_rf, logit$CI_upper_o, tree$CI_upper_tree_o, rf$CI_upper_rf_o))
+rownames(res_semi_tot3) <- c("Logit 2-tails", "Tree 2-tails", "Random Forest 2-tails", "Logit 1-tail", "Tree 1-tail", "Random Forest 1-tail")
+
+knitr::kable(res_semi_tot3,digits=4, caption="IWE for Total variable filtering by age35 and woman")
+```
+
+#### Variable Night amb l'efecte de covariables
+
+En aquest cas, els resultats mostrats s'assemblen més als que s'obtenen amb el model TWFE als que s'han obtingut amb l'IWE amb dades desbalancejades, ja que els pvalors indiquen que els resultats són no significatius. Això dona lloc a pensar que els resultats anteriorment obtinguts amb l'IWE no són fiables. Finalment, comentar que altre cop el model random forest ha tornat a donar com a resposta menys de 5 valors, dificultant la regressió que es requereix fer. 
+
+##### Filtratge per "power100"
+
+```{r, warning = FALSE}
+# Seleccionem només el conjunt de dades que ens interessa
+data1c_nig_red <- data1c_balanced[data1c_balanced$power100 == 1,]
+
+# Yi1 = Km totals en t = 1 / Yi2 = Km totals en t = 2
+data1c_nig_red[data1c_nig_red$Time==2, "Y1"] <- data1c_nig_red[data1c_nig_red$Time == 1,"Total"]
+data1c_nig_red[data1c_nig_red$Time==2, "Y2"] <- data1c_nig_red[data1c_nig_red$Time == 2,"Total"]
+
+# Seleccionem només les dades a t = 2
+data1c_nig_red <- data1c_nig_red[data1c_nig_red$Time == 2, ]
+
+n <- nrow(data1c_nig_red)
+df <- n - 1 # graus de llibertat
+
+logit <- semiparametric_logit(data1c_nig_red, df)
+tree <- semiparametric_tree(data1c_nig_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+rf <- semiparametric_rf(data1c_nig_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+
+# Resultats: 
+res_semi_nig1<-cbind(ATT_2 = c(logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf, logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf), sd = c(logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf, logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf), t_stat = c(logit$t_stat, tree$t_stat_tree, rf$t_stat_rf, logit$t_stat, tree$t_stat_tree, rf$t_stat_rf), p_value = c(logit$p_value, tree$p_value_tree, rf$p_value_rf, logit$p_value_o, tree$p_value_tree_o, rf$p_value_rf_o), CI_lower = c(logit$CI_lower, tree$CI_lower_tree, rf$CI_lower_rf, logit$CI_lower_o, tree$CI_lower_tree_o, rf$CI_lower_rf_o), CI_upper = c(logit$CI_upper, tree$CI_upper_tree, rf$CI_upper_rf, logit$CI_upper_o, tree$CI_upper_tree_o, rf$CI_upper_rf_o))
+rownames(res_semi_nig1) <- c("Logit 2-tails", "Tree 2-tails", "Random Forest 2-tails", "Logit 1-tail", "Tree 1-tail", "Random Forest 1-tail")
+
+knitr::kable(res_semi_nig1,digits=4, caption="IWE for Night variable filtering by power100")
+```
+
+#### Variable Speed amb l'efecte de covariables
+
+En aquest cas els resultats tornen a ser similars als obtinguts anteriorment, en notar que la variable `age35` mostra un efecte del tractament significatiu i negatiu, com també passava amb el model TWFE. A més a més, la variable `power100` mostra un $ATT_2$ amb un pvalor també proper al $0.05$. Es confirma doncs, que tot i que aquests models semi-paramètrics en general no funcionin molt bé, la relació negativa de l'edat amb la velocitat després de tenir un accident és molt clarament significativa, així com la relació que mostra el fet de tenir un cotxe petit, en aquest cas de caràcter positiu, 
+
+##### Filtratge per "age35"
+
+```{r, warning = FALSE}
+# Seleccionem només el conjunt de dades que ens interessa
+data1c_spe_red <- data1c_balanced[data1c_balanced$age35 == 1,]
+
+# Yi1 = percentatge Speed en t = 1 / Yi2 = percentatge Speed en t = 2
+data1c_spe_red[data1c_spe_red$Time==2, "Y1"] <- data1c_spe_red[data1c_spe_red$Time == 1,"Speed"]
+data1c_spe_red[data1c_spe_red$Time==2, "Y2"] <- data1c_spe_red[data1c_spe_red$Time == 2,"Speed"]
+
+# Seleccionem només les dades a t = 2
+data1c_spe_red <- data1c_spe_red[data1c_spe_red$Time == 2, ]
+
+n <- nrow(data1c_spe_red)
+df <- n - 1 # graus de llibertat
+
+logit <- semiparametric_logit(data1c_spe_red, df)
+tree <- semiparametric_tree(data1c_spe_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+rf <- semiparametric_rf(data1c_spe_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+
+# Resultats: 
+res_semi_spe1<-cbind(ATT_2 = c(logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf, logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf), sd = c(logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf, logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf), t_stat = c(logit$t_stat, tree$t_stat_tree, rf$t_stat_rf, logit$t_stat, tree$t_stat_tree, rf$t_stat_rf), p_value = c(logit$p_value, tree$p_value_tree, rf$p_value_rf, logit$p_value_o, tree$p_value_tree_o, rf$p_value_rf_o), CI_lower = c(logit$CI_lower, tree$CI_lower_tree, rf$CI_lower_rf, logit$CI_lower_o, tree$CI_lower_tree_o, rf$CI_lower_rf_o), CI_upper = c(logit$CI_upper, tree$CI_upper_tree, rf$CI_upper_rf, logit$CI_upper_o, tree$CI_upper_tree_o, rf$CI_upper_rf_o))
+rownames(res_semi_spe1) <- c("Logit 2-tails", "Tree 2-tails", "Random Forest 2-tails", "Logit 1-tail", "Tree 1-tail", "Random Forest 1-tail")
+
+knitr::kable(res_semi_spe1,digits=4, caption="IWE for Speed variable filtering by age35")
+```
+
+##### Filtratge per "lic_age15"
+
+```{r, warning = FALSE}
+# Seleccionem només el conjunt de dades que ens interessa
+data1c_spe_red <- data1c_balanced[data1c_balanced$lic_age15 == 1,]
+
+# Yi1 = percentatge Speed en t = 1 / Yi2 = percentatge Speed en t = 2
+data1c_spe_red[data1c_spe_red$Time==2, "Y1"] <- data1c_spe_red[data1c_spe_red$Time == 1,"Speed"]
+data1c_spe_red[data1c_spe_red$Time==2, "Y2"] <- data1c_spe_red[data1c_spe_red$Time == 2,"Speed"]
+
+# Seleccionem només les dades a t = 2
+data1c_spe_red <- data1c_spe_red[data1c_spe_red$Time == 2, ]
+
+n <- nrow(data1c_spe_red)
+df <- n - 1 # graus de llibertat
+
+logit <- semiparametric_logit(data1c_spe_red, df)
+tree <- semiparametric_tree(data1c_spe_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+rf <- semiparametric_rf(data1c_spe_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+
+# Resultats: 
+res_semi_spe2<-cbind(ATT_2 = c(logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf, logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf), sd = c(logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf, logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf), t_stat = c(logit$t_stat, tree$t_stat_tree, rf$t_stat_rf, logit$t_stat, tree$t_stat_tree, rf$t_stat_rf), p_value = c(logit$p_value, tree$p_value_tree, rf$p_value_rf, logit$p_value_o, tree$p_value_tree_o, rf$p_value_rf_o), CI_lower = c(logit$CI_lower, tree$CI_lower_tree, rf$CI_lower_rf, logit$CI_lower_o, tree$CI_lower_tree_o, rf$CI_lower_rf_o), CI_upper = c(logit$CI_upper, tree$CI_upper_tree, rf$CI_upper_rf, logit$CI_upper_o, tree$CI_upper_tree_o, rf$CI_upper_rf_o))
+rownames(res_semi_spe2) <- c("Logit 2-tails", "Tree 2-tails", "Random Forest 2-tails", "Logit 1-tail", "Tree 1-tail", "Random Forest 1-tail")
+
+knitr::kable(res_semi_spe2,digits=4, caption="IWE for Speed variable filtering by lic_age15")
+```
+
+##### Filtratge per "power100"
+
+```{r, warning = FALSE}
+# Seleccionem només el conjunt de dades que ens interessa
+data1c_spe_red <- data1c_balanced[data1c_balanced$power100 == 1,]
+
+# Yi1 = percentatge Speed en t = 1 / Yi2 = percentatge Speed en t = 2
+data1c_spe_red[data1c_spe_red$Time==2, "Y1"] <- data1c_spe_red[data1c_spe_red$Time == 1,"Speed"]
+data1c_spe_red[data1c_spe_red$Time==2, "Y2"] <- data1c_spe_red[data1c_spe_red$Time == 2,"Speed"]
+
+# Seleccionem només les dades a t = 2
+data1c_spe_red <- data1c_spe_red[data1c_spe_red$Time == 2, ]
+
+n <- nrow(data1c_spe_red)
+df <- n - 1 # graus de llibertat
+
+logit <- semiparametric_logit(data1c_spe_red, df)
+tree <- semiparametric_tree(data1c_spe_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+rf <- semiparametric_rf(data1c_spe_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+
+# Resultats: 
+res_semi_spe3<-cbind(ATT_2 = c(logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf, logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf), sd = c(logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf, logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf), t_stat = c(logit$t_stat, tree$t_stat_tree, rf$t_stat_rf, logit$t_stat, tree$t_stat_tree, rf$t_stat_rf), p_value = c(logit$p_value, tree$p_value_tree, rf$p_value_rf, logit$p_value_o, tree$p_value_tree_o, rf$p_value_rf_o), CI_lower = c(logit$CI_lower, tree$CI_lower_tree, rf$CI_lower_rf, logit$CI_lower_o, tree$CI_lower_tree_o, rf$CI_lower_rf_o), CI_upper = c(logit$CI_upper, tree$CI_upper_tree, rf$CI_upper_rf, logit$CI_upper_o, tree$CI_upper_tree_o, rf$CI_upper_rf_o))
+rownames(res_semi_spe3) <- c("Logit 2-tails", "Tree 2-tails", "Random Forest 2-tails", "Logit 1-tail", "Tree 1-tail", "Random Forest 1-tail")
+
+knitr::kable(res_semi_spe3,digits=4, caption="IWE for Speed variable filtering by power100")
+```
+
+##### Filtratge per "age35" i "lic_age15"
+
+```{r, warning = FALSE}
+# Seleccionem només el conjunt de dades que ens interessa
+data1c_spe_red <- data1c_balanced[data1c_balanced$age35 == 1 & data1c_balanced$lic_age15 == 1,]
+
+# Yi1 = percentatge Speed en t = 1 / Yi2 = percentatge Speed en t = 2
+data1c_spe_red[data1c_spe_red$Time==2, "Y1"] <- data1c_spe_red[data1c_spe_red$Time == 1,"Speed"]
+data1c_spe_red[data1c_spe_red$Time==2, "Y2"] <- data1c_spe_red[data1c_spe_red$Time == 2,"Speed"]
+
+# Seleccionem només les dades a t = 2
+data1c_spe_red <- data1c_spe_red[data1c_spe_red$Time == 2, ]
+
+n <- nrow(data1c_spe_red)
+df <- n - 1 # graus de llibertat
+
+logit <- semiparametric_logit(data1c_spe_red, df)
+tree <- semiparametric_tree(data1c_spe_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+rf <- semiparametric_rf(data1c_spe_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+
+# Resultats: 
+res_semi_spe4<-cbind(ATT_2 = c(logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf, logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf), sd = c(logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf, logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf), t_stat = c(logit$t_stat, tree$t_stat_tree, rf$t_stat_rf, logit$t_stat, tree$t_stat_tree, rf$t_stat_rf), p_value = c(logit$p_value, tree$p_value_tree, rf$p_value_rf, logit$p_value_o, tree$p_value_tree_o, rf$p_value_rf_o), CI_lower = c(logit$CI_lower, tree$CI_lower_tree, rf$CI_lower_rf, logit$CI_lower_o, tree$CI_lower_tree_o, rf$CI_lower_rf_o), CI_upper = c(logit$CI_upper, tree$CI_upper_tree, rf$CI_upper_rf, logit$CI_upper_o, tree$CI_upper_tree_o, rf$CI_upper_rf_o))
+rownames(res_semi_spe4) <- c("Logit 2-tails", "Tree 2-tails", "Random Forest 2-tails", "Logit 1-tail", "Tree 1-tail", "Random Forest 1-tail")
+
+knitr::kable(res_semi_spe4,digits=4, caption="IWE for Speed variable filtering by age35 and lic_age15")
+```
+
+##### Filtratge per "age35" i "power100"
+
+```{r, warning = FALSE}
+# Seleccionem només el conjunt de dades que ens interessa
+data1c_spe_red <- data1c_balanced[data1c_balanced$age35 == 1 & data1c_balanced$power100 == 1,]
+
+# Yi1 = percentatge Speed en t = 1 / Yi2 = percentatge Speed en t = 2
+data1c_spe_red[data1c_spe_red$Time==2, "Y1"] <- data1c_spe_red[data1c_spe_red$Time == 1,"Speed"]
+data1c_spe_red[data1c_spe_red$Time==2, "Y2"] <- data1c_spe_red[data1c_spe_red$Time == 2,"Speed"]
+
+# Seleccionem només les dades a t = 2
+data1c_spe_red <- data1c_spe_red[data1c_spe_red$Time == 2, ]
+
+n <- nrow(data1c_spe_red)
+df <- n - 1 # graus de llibertat
+
+logit <- semiparametric_logit(data1c_spe_red, df)
+tree <- semiparametric_tree(data1c_spe_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+rf <- semiparametric_rf(data1c_spe_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+
+# Resultats: 
+res_semi_spe5<-cbind(ATT_2 = c(logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf, logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf), sd = c(logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf, logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf), t_stat = c(logit$t_stat, tree$t_stat_tree, rf$t_stat_rf, logit$t_stat, tree$t_stat_tree, rf$t_stat_rf), p_value = c(logit$p_value, tree$p_value_tree, rf$p_value_rf, logit$p_value_o, tree$p_value_tree_o, rf$p_value_rf_o), CI_lower = c(logit$CI_lower, tree$CI_lower_tree, rf$CI_lower_rf, logit$CI_lower_o, tree$CI_lower_tree_o, rf$CI_lower_rf_o), CI_upper = c(logit$CI_upper, tree$CI_upper_tree, rf$CI_upper_rf, logit$CI_upper_o, tree$CI_upper_tree_o, rf$CI_upper_rf_o))
+rownames(res_semi_spe5) <- c("Logit 2-tails", "Tree 2-tails", "Random Forest 2-tails", "Logit 1-tail", "Tree 1-tail", "Random Forest 1-tail")
+
+knitr::kable(res_semi_spe5,digits=4, caption="IWE for Speed variable filtering by age35 and power100")
+```
+
+##### Filtratge per "lic_age15" i "power100"
+
+```{r, warning=FALSE}
+# Seleccionem només el conjunt de dades que ens interessa
+data1c_spe_red <- data1c_balanced[data1c_balanced$lic_age15 == 1 & data1c_balanced$power100 == 1,]
+
+# Yi1 = percentatge Speed en t = 1 / Yi2 = percentatge Speed en t = 2
+data1c_spe_red[data1c_spe_red$Time==2, "Y1"] <- data1c_spe_red[data1c_spe_red$Time == 1,"Speed"]
+data1c_spe_red[data1c_spe_red$Time==2, "Y2"] <- data1c_spe_red[data1c_spe_red$Time == 2,"Speed"]
+
+# Seleccionem només les dades a t = 2
+data1c_spe_red <- data1c_spe_red[data1c_spe_red$Time == 2, ]
+
+n <- nrow(data1c_spe_red)
+df <- n - 1 # graus de llibertat
+
+logit <- semiparametric_logit(data1c_spe_red, df)
+tree <- semiparametric_tree(data1c_spe_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+rf <- semiparametric_rf(data1c_spe_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+
+# Resultats: 
+res_semi_spe6<-cbind(ATT_2 = c(logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf, logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf), sd = c(logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf, logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf), t_stat = c(logit$t_stat, tree$t_stat_tree, rf$t_stat_rf, logit$t_stat, tree$t_stat_tree, rf$t_stat_rf), p_value = c(logit$p_value, tree$p_value_tree, rf$p_value_rf, logit$p_value_o, tree$p_value_tree_o, rf$p_value_rf_o), CI_lower = c(logit$CI_lower, tree$CI_lower_tree, rf$CI_lower_rf, logit$CI_lower_o, tree$CI_lower_tree_o, rf$CI_lower_rf_o), CI_upper = c(logit$CI_upper, tree$CI_upper_tree, rf$CI_upper_rf, logit$CI_upper_o, tree$CI_upper_tree_o, rf$CI_upper_rf_o))
+rownames(res_semi_spe6) <- c("Logit 2-tails", "Tree 2-tails", "Random Forest 2-tails", "Logit 1-tail", "Tree 1-tail", "Random Forest 1-tail")
+
+knitr::kable(res_semi_spe6,digits=4, caption="IWE for Speed variable filtering by lic_age15 and power100")
+```
+
+##### Filtratge per "age35", "lic_age15" i "power100"
+
+```{r, warning = FALSE}
+# Seleccionem només el conjunt de dades que ens interessa
+data1c_spe_red <- data1c_balanced[data1c_balanced$age35 == 1 & data1c_balanced$lic_age15 == 1 & data1c_balanced$power100 == 1,]
+
+# Yi1 = percentatge Speed en t = 1 / Yi2 = percentatge Speed en t = 2
+data1c_spe_red[data1c_spe_red$Time==2, "Y1"] <- data1c_spe_red[data1c_spe_red$Time == 1,"Speed"]
+data1c_spe_red[data1c_spe_red$Time==2, "Y2"] <- data1c_spe_red[data1c_spe_red$Time == 2,"Speed"]
+
+# Seleccionem només les dades a t = 2
+data1c_spe_red <- data1c_spe_red[data1c_spe_red$Time == 2, ]
+
+n <- nrow(data1c_spe_red)
+df <- n - 1 # graus de llibertat
+
+logit <- semiparametric_logit(data1c_spe_red, df)
+tree <- semiparametric_tree(data1c_spe_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+rf <- semiparametric_rf(data1c_spe_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+
+# Resultats: 
+res_semi_spe7<-cbind(ATT_2 = c(logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf, logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf), sd = c(logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf, logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf), t_stat = c(logit$t_stat, tree$t_stat_tree, rf$t_stat_rf, logit$t_stat, tree$t_stat_tree, rf$t_stat_rf), p_value = c(logit$p_value, tree$p_value_tree, rf$p_value_rf, logit$p_value_o, tree$p_value_tree_o, rf$p_value_rf_o), CI_lower = c(logit$CI_lower, tree$CI_lower_tree, rf$CI_lower_rf, logit$CI_lower_o, tree$CI_lower_tree_o, rf$CI_lower_rf_o), CI_upper = c(logit$CI_upper, tree$CI_upper_tree, rf$CI_upper_rf, logit$CI_upper_o, tree$CI_upper_tree_o, rf$CI_upper_rf_o))
+rownames(res_semi_spe7) <- c("Logit 2-tails", "Tree 2-tails", "Random Forest 2-tails", "Logit 1-tail", "Tree 1-tail", "Random Forest 1-tail")
+
+knitr::kable(res_semi_spe7,digits=4, caption="IWE for Speed variable filtering by age35, lic_age15 and power100")
+```
+
+#### Variable Urban amb l'efecte de covariables
+
+Altre cop els resultats per a tots els filtratges són no significatius per a les dues variables provades, així com per a la seva signifiació. En general, es pot notar que filtrar per més d'1 variable dona lloc a obtenir una significació menor. Això es podria explicar perquè com més filtratge es realitza, menys mostres queden al conjunt de dades i més difícil és que els models captin el comportament darrere les dades. 
+
+##### Filtratge per "lic_age15"
+
+```{r, warning = FALSE}
+# Seleccionem només el conjunt de dades que ens interessa
+data1c_urb_red <- data1c_balanced[data1c_balanced$lic_age15 == 1,]
+
+# Yi1 = percentatge Speed en t = 1 / Yi2 = percentatge Speed en t = 2
+data1c_urb_red[data1c_urb_red$Time==2, "Y1"] <- data1c_urb_red[data1c_urb_red$Time == 1,"Speed"]
+data1c_urb_red[data1c_urb_red$Time==2, "Y2"] <- data1c_urb_red[data1c_urb_red$Time == 2,"Speed"]
+
+# Seleccionem només les dades a t = 2
+data1c_urb_red <- data1c_urb_red[data1c_urb_red$Time == 2, ]
+
+n <- nrow(data1c_urb_red)
+df <- n - 1 # graus de llibertat
+
+logit <- semiparametric_logit(data1c_urb_red, df)
+tree <- semiparametric_tree(data1c_urb_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+rf <- semiparametric_rf(data1c_urb_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+
+# Resultats: 
+res_semi_urb1<-cbind(ATT_2 = c(logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf, logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf), sd = c(logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf, logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf), t_stat = c(logit$t_stat, tree$t_stat_tree, rf$t_stat_rf, logit$t_stat, tree$t_stat_tree, rf$t_stat_rf), p_value = c(logit$p_value, tree$p_value_tree, rf$p_value_rf, logit$p_value_o, tree$p_value_tree_o, rf$p_value_rf_o), CI_lower = c(logit$CI_lower, tree$CI_lower_tree, rf$CI_lower_rf, logit$CI_lower_o, tree$CI_lower_tree_o, rf$CI_lower_rf_o), CI_upper = c(logit$CI_upper, tree$CI_upper_tree, rf$CI_upper_rf, logit$CI_upper_o, tree$CI_upper_tree_o, rf$CI_upper_rf_o))
+rownames(res_semi_urb1) <- c("Logit 2-tails", "Tree 2-tails", "Random Forest 2-tails", "Logit 1-tail", "Tree 1-tail", "Random Forest 1-tail")
+
+knitr::kable(res_semi_urb1,digits=4, caption="IWE for Urban variable filtering by lic_age15")
+```
+
+##### Filtratge per "woman"
+
+```{r, warning = FALSE}
+# Seleccionem només el conjunt de dades que ens interessa
+data1c_urb_red <- data1c_balanced[data1c_balanced$woman == 1,]
+
+# Yi1 = percentatge Speed en t = 1 / Yi2 = percentatge Speed en t = 2
+data1c_urb_red[data1c_urb_red$Time==2, "Y1"] <- data1c_urb_red[data1c_urb_red$Time == 1,"Speed"]
+data1c_urb_red[data1c_urb_red$Time==2, "Y2"] <- data1c_urb_red[data1c_urb_red$Time == 2,"Speed"]
+
+# Seleccionem només les dades a t = 2
+data1c_urb_red <- data1c_urb_red[data1c_urb_red$Time == 2, ]
+
+n <- nrow(data1c_urb_red)
+df <- n - 1 # graus de llibertat
+
+logit <- semiparametric_logit(data1c_urb_red, df)
+tree <- semiparametric_tree(data1c_urb_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+rf <- semiparametric_rf(data1c_urb_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+
+# Resultats: 
+res_semi_urb2<-cbind(ATT_2 = c(logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf, logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf), sd = c(logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf, logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf), t_stat = c(logit$t_stat, tree$t_stat_tree, rf$t_stat_rf, logit$t_stat, tree$t_stat_tree, rf$t_stat_rf), p_value = c(logit$p_value, tree$p_value_tree, rf$p_value_rf, logit$p_value_o, tree$p_value_tree_o, rf$p_value_rf_o), CI_lower = c(logit$CI_lower, tree$CI_lower_tree, rf$CI_lower_rf, logit$CI_lower_o, tree$CI_lower_tree_o, rf$CI_lower_rf_o), CI_upper = c(logit$CI_upper, tree$CI_upper_tree, rf$CI_upper_rf, logit$CI_upper_o, tree$CI_upper_tree_o, rf$CI_upper_rf_o))
+rownames(res_semi_urb2) <- c("Logit 2-tails", "Tree 2-tails", "Random Forest 2-tails", "Logit 1-tail", "Tree 1-tail", "Random Forest 1-tail")
+
+knitr::kable(res_semi_urb2,digits=4, caption="IWE for Urban variable filtering by woman")
+```
+
+##### Filtratge per "lic_age15" i "woman"
+
+
+```{r, warning = FALSE}
+# Seleccionem només el conjunt de dades que ens interessa
+data1c_urb_red <- data1c_balanced[data1c_balanced$lic_age15 == 1 & data1c_balanced$woman == 1,]
+
+# Yi1 = percentatge Speed en t = 1 / Yi2 = percentatge Speed en t = 2
+data1c_urb_red[data1c_urb_red$Time==2, "Y1"] <- data1c_urb_red[data1c_urb_red$Time == 1,"Speed"]
+data1c_urb_red[data1c_urb_red$Time==2, "Y2"] <- data1c_urb_red[data1c_urb_red$Time == 2,"Speed"]
+
+# Seleccionem només les dades a t = 2
+data1c_urb_red <- data1c_urb_red[data1c_urb_red$Time == 2, ]
+
+n <- nrow(data1c_urb_red)
+df <- n - 1 # graus de llibertat
+
+logit <- semiparametric_logit(data1c_urb_red, df)
+tree <- semiparametric_tree(data1c_urb_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+rf <- semiparametric_rf(data1c_urb_red, df, logit$t_critical, logit$t_critical_o, logit$mean_D)
+
+# Resultats: 
+res_semi_urb3<-cbind(ATT_2 = c(logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf, logit$ATT_2, tree$ATT_2_tree, rf$ATT_2_rf), sd = c(logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf, logit$sd_ATT_2, tree$sd_ATT_2_tree, rf$sd_ATT_2_rf), t_stat = c(logit$t_stat, tree$t_stat_tree, rf$t_stat_rf, logit$t_stat, tree$t_stat_tree, rf$t_stat_rf), p_value = c(logit$p_value, tree$p_value_tree, rf$p_value_rf, logit$p_value_o, tree$p_value_tree_o, rf$p_value_rf_o), CI_lower = c(logit$CI_lower, tree$CI_lower_tree, rf$CI_lower_rf, logit$CI_lower_o, tree$CI_lower_tree_o, rf$CI_lower_rf_o), CI_upper = c(logit$CI_upper, tree$CI_upper_tree, rf$CI_upper_rf, logit$CI_upper_o, tree$CI_upper_tree_o, rf$CI_upper_rf_o))
+rownames(res_semi_urb3) <- c("Logit 2-tails", "Tree 2-tails", "Random Forest 2-tails", "Logit 1-tail", "Tree 1-tail", "Random Forest 1-tail")
+
+knitr::kable(res_semi_urb3,digits=4, caption="IWE for Urban variable filtering by lic_age15 and woman")
+```
+

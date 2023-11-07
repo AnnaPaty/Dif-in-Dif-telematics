@@ -1,0 +1,1428 @@
+---
+title: "4. Anàlisi dels accidents causats per tercers"
+author: "Anna Orteu"
+output: 
+  pdf_document: 
+      toc: yes
+      toc_depth: '4'
+      number_sections: yes
+  html_document:
+      toc: yes
+      toc_depth: '4'
+      number_sections: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+Les asseguradores automovilístiques distingeixen els accidents segons aquells que han sigut culpa de l'assegurat versus els que són culpa d'un tercer, en tenir grans implicacions sobre el preu. És per aquesta raó, que a continuació es durà a terme el mateix anàlisi que el fet anteriorment amb tots els accidents de forma conjunta però ara considerant únicament els accidents que han estat culpa de tercers. S'espera veure que els models no donguin lloc a resultats tant significatius, en assumir que un usuari no canvia tant la seva manera de conduir si ha tingut un accident però aquest no ha estat causat per culpa seva.
+
+
+```{r}
+#install.packages("e1071")
+#install.packages("ggplot2")
+#install.packages("gridExtra")
+#install.packages("plm")
+#install.packages("dplyr")
+#install.packages("MASS")
+#install.packages("WeightIt")
+#install.packages("cobalt")
+#install.packages("rpart")
+#install.packages("randomForest")
+#install.packages("caret")
+#install.packages("gplots")
+```
+
+```{r, warning = FALSE, include = FALSE}
+library(e1071)
+library(ggplot2)
+library(gridExtra)
+library(plm)
+library(dplyr)
+library(MASS)
+library(WeightIt)
+library(cobalt)
+library(rpart)
+library(randomForest)
+#library(caret)
+library(gplots)
+```
+
+
+# Dades 
+
+```{r}
+#setwd("C:/Users/annap/OneDrive/Documents/paty/MESIO/Investigació/TFM")
+data<-read.csv("payd09_11_final_100.csv",header=T)
+```
+
+Es seleccionen només aquells individus que:
+
+- Han conduit 100 quilòmetres o més en el període de pre-tractament
+- No han declarat accidents en els períodes de pre i post tractament
+- No hagin tingut cap accident o l'accident ha estat causat per un tercer
+
+```{r}
+# Creem les variables d'interès (culpa assegurat) i (culpa tercers)
+# Primer creem les variables Dcon i Dase que ens permetran crear després Trcon i Trase
+data$Dase <- data$n_per_ase10 + data$n_mat_ase10
+data$Dcon <- data$n_per_con10 + data$n_mat_con10
+
+# Ho passem a una variable binària perquè es pot haver tingut més d'un accident
+data$Dase <- ifelse(data$Dase > 0, 1, 0)
+data$Dcon <- ifelse(data$Dcon > 0, 1, 0)
+
+# Trcon_it = Dcon_i * I(t=2)  i igual per Trase
+data$Trase <- ifelse(data$Dase ==1 & data$time == 2, 1, 0)
+data$Trcon <- ifelse(data$Dcon ==1 & data$time == 2, 1, 0)
+
+# Eliminem els accidents causats per culpa d'un mateix
+
+data0 <- data[data$Dase == 0, ]
+
+# Seleccionem les variables d'interès i les renombrem
+data0<-data0[,c("ID","time","km_anuales","km_nocturnos","porc_toler","porc_vurba","Dcon","Trcon")]
+colnames(data0)<-c("ID", "Time","Total","Night","Speed","Urban","Dcon","Trcon")
+
+# Passem la variable Night de quilòmetres a percentatge
+data0$Night <- data0$Night/data0$Total*100
+data0[is.na(data0$Night), "Night"] <- 0 # Perquè hi ha registres amb 0 km_totals i la divisió per 0 dona NaN
+
+# Seleccionem les dades segons períodes
+data0_1<-data0[data0$Time==1,]
+data0_2<-data0[data0$Time==2,]
+```
+
+Les variables d'interès són doncs: 
+
+- "Quilòmetres totals" (Total)
+- "Percentatge de quilòmetres durant la nit" (Night)
+- "Percentatge de distància conduida per sobre de la velocitat" (Speed) 
+- "Percentatge de quilòmetres en àrees urbanes" (Urban)
+
+I en total compte amb `r length(unique(data0$ID))` assegurats. 
+
+# Estadístics
+
+De les quals a continuació prenem els seus descriptius en el pre i post període: 
+
+```{r, warning = FALSE}
+# Descriptive of telematics variables in t=1 and t=2
+# t=1
+Means<-colMeans(data0_1[,-c(1,2,7,8)])
+Variances<-diag(var(data0_1[,-c(1,2,7,8)]))
+Desviacion<-sqrt(Variances)
+Q<-apply(data0_1[,-c(1,2,7,8)],2,quantile)
+skew<-apply(data0_1[,-c(1,2,7,8)],2,skewness)
+kur<-apply(data0_1[,-c(1,2,7,8)],2,kurtosis)
+
+Estadisticos0_1<-rbind(Means,Desviacion,Q,skew,kur)
+rownames(Estadisticos0_1)<-c('Means','STD','Min','Q25','Median','Q75','Max',"Kurtosis","Skewness")
+# Estadisticos0_1
+knitr::kable(Estadisticos0_1,digits=4, caption="Telematics variables in pre-treatment period t=1")
+
+# t=2
+Means<-colMeans(data0_2[,-c(1,2,7,8)])
+Variances<-diag(var(data0_2[,-c(1,2,7,8)]))
+Desviacion<-sqrt(Variances)
+Q<-apply(data0_2[,-c(1,2,7,8)],2,quantile)
+skew<-apply(data0_2[,-c(1,2,7,8)],2,skewness)
+kur<-apply(data0_2[,-c(1,2,7,8)],2,kurtosis)
+
+Estadisticos0_2<-rbind(Means,Desviacion,Q,skew,kur)
+rownames(Estadisticos0_2)<-c('Means','STD','Min','Q25','Median','Q75','Max',"Kurtosis","Skewness")
+# Estadisticos0_2
+knitr::kable(Estadisticos0_2,digits=4, caption="Telematics variables in post-treatment period t=2")
+```
+
+A continuació imprimim les mitjanes pels dos grups (control i tractament) i pels dos períodes (pre i post)
+
+```{r, warning = FALSE}
+# Total km
+Means<-aggregate(Total~Time+Dcon,data=data0,mean)
+Means<-as.data.frame(Means)
+
+Means$Dcon=as.factor(Means$Dcon)
+Means$Time=as.factor(Means$Time)
+p1<-ggplot(data=Means, aes(x=Time, y=Total, group=Dcon)) +
+  geom_line(aes(linetype=Dcon),size=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "Total yearly km", x = "Time")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+
+# Night km
+Means1<-aggregate(Night~Time+Dcon,data=data0,mean)
+Means1<-as.data.frame(Means1)
+Means1$Dcon=as.factor(Means1$Dcon)
+Means1$Time=as.factor(Means1$Time)
+p2<-ggplot(data=Means1, aes(x=Time, y=Night, group=Dcon)) +
+  geom_line(aes(linetype=Dcon),size=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% night km", x = "Time")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+
+
+# % over-speed limit
+Means2<-aggregate(Speed~Time+Dcon,data=data0,mean)
+Means2<-as.data.frame(Means2)
+Means2$Dcon=as.factor(Means2$Dcon)
+Means2$Time=as.factor(Means2$Time)
+p3<-ggplot(data=Means2, aes(x=Time, y=Speed, group=Dcon)) +
+  geom_line(aes(linetype=Dcon),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% Over-speed limits", x = "Time")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+
+
+# % urban
+Means3<-aggregate(Urban~Time+Dcon,data=data0,mean)
+Means3<-as.data.frame(Means3)
+Means3$Dcon=as.factor(Means3$Dcon)
+Means3$Time=as.factor(Means3$Time)
+p4<-ggplot(data=Means3, aes(x=Time, y=Urban, group=Dcon)) +
+  geom_line(aes(linetype=Dcon),size=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% Urban km", x = "Time")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+
+knitr::kable(list(Means, Means1),digits=4, caption="Means for pre and post-treatment periods by group")
+knitr::kable(list(Means2, Means3),digits=4)
+```
+
+```{r, out.width="70%", fig.align = 'center'}
+grid.arrange(p1, p2, p3, p4, nrow=2)
+```
+
+En aquest cas en comptes d'analitzar els resultats per ells mateixos es compararan amb els obtinguts en el cas d'analitzar els accidents que havien estat causats per un mateix. La gràfica que indica el nombre de quilòmetres totals és molt informativa i afirma en certa manera la hipòtesi inicial, en observar que tot i que la tendència és decreixen, degut a la crisis mencionada varis cops al llarg del treball, la línia discontínua no baixa tant, indicant que els que han tingut un accident causat per tercers no disminueixen tant els quilòmetres totals com aquells que havien causat l'accident. 
+
+La gràfica referent a `Night` és bastant similar, tot i que abans la diferència del període de pre a post tractament incrementava, mentre ara disminueix. No obstant això, la diferència és molt poca, donant lloc a entendre que aquesta variable simplement respon a la necessitat de l'ús del vehicle durant la nit, independentment dels accidents. Pel que fa a la velocitat, mentre abans sí que notàvem que aquells que havien tingut un accident disminuien la seva velocitat en major mesura que els que no, en aquest cas el comportament és invers. A més a més, els usuaris que han tingut un accident causat per tercers de forma sistemàtica condueixen més lentament. Això dona peu a concloure que l'excès de velocitat no ha donat lloc als accidents, tot i que potser sí la lentitud, que també és un factor de risc. 
+
+Finalment, tenir un accident causat per tercers no sembla tenir cap evidència significativa respecte al percentatge de quilòmetres recorreguts per via urbana, en disminuir les dues línies de la gràfica de forma paral·lela. 
+
+A més a més, com en tots els cassos anteriors, s'afegiran les següents covariables als models: 
+
+\begin{itemize}
+\item age$=$ edat de l'assegurat
+\item age35$=1$ si l'edat$\leq 35$ (primer quartil aproximadament), $=0$ altrament
+\item age\_lic$=$ edat de la llicència de conduir
+\item age\_lic15$=1$ si l'edat \_lic$\leq 15$ (primer quartil aproximadament), $=0$ altrament
+\item parking\_yes$=1$ si s'utilitza pàrquing durant la nit, $=0$ altrament
+\item woman$=1$ si l'assegurada és una dona, $=0$ altrament
+\item BMzones$=1$ si la zona de condució és Barcelona o Madrid, $=0$ altrament
+\item power100$=1$ si la potència del cotxe és $\leq 100$, $=0$ altrament
+\end{itemize}
+
+En aquest cas s'analitzarà l'edat i els anys de llicència en la seva forma numèrica, en haver detectat amb els dos anàlisi fets anteriorment que és la millor manera de considerar-les. Les estadístiques d'aquestes covariables amb aquest nou conjunt de dades filtrat en el primer i segon període són les següents:
+
+```{r}
+# Covariates
+# Data with covariates:
+data1<-data0
+data <- data[data$Dase == 0,]
+# age 
+data$Edad<-as.numeric((as.Date("2023-01-01")-as.Date(as.character(data$fec_con),format="%Y%m%d"))/365)
+data1$age<-data$Edad
+data1$age35<-as.numeric(data1$age<=35)
+# license age
+data$Ant_per<-as.numeric((as.Date("2023-01-01")-as.Date(as.character(data$fec_carne),format="%Y%m%d"))/365)
+data[is.na(data$Ant_per),c("Ant_per")]<-data[10308,c("Ant_per")]
+data1$lic_age<-data$Ant_per
+data1$lic_age15<-as.numeric(data1$lic_age<=15)
+# parking
+data1$parking_yes<-1-(data$garaje=="V\xeda p\xfablica")
+# gender
+data1$woman<-as.numeric(data$sexo_con=="MUJER")
+# zone
+data1$BMzones<-as.numeric(data$zona=="MADRID")+as.numeric(data$zona=="BARCELONA")+
+              as.numeric(data$zona=="BARCELONA (CAT II 10/05/0")+
+              as.numeric(data$zona=="BARCELONA CAT II (05-04-0")
+# power
+data1$power100<-as.numeric(data$potencia<=100)
+
+# Interactions with time=2
+data1$age_2<-data1$age*(data1$Time==2)
+data1$age35_2<-data1$age35*(data1$Time==2)
+data1$lic_age_2<-data1$lic_age*(data1$Time==2)
+data1$lic_age15_2<-data1$lic_age15*(data1$Time==2)
+data1$parking_yes2<-data1$parking_yes*(data1$Time==2)
+data1$woman_2<-data1$woman*(data1$Time==2)
+data1$BMzones_2<-data1$BMzones*(data1$Time==2)
+data1$power100_2<-data1$power100*(data1$Time==2)
+
+# Descriptive statistics of cavariates
+data1_1<-data1[data0$Time==1,]
+data1_2<-data1[data0$Time==2,]
+# t=1
+Means<-colMeans(data1_1[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")])
+Variances<-diag(var(data1_1[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")]))
+Desviacion<-sqrt(Variances)
+Q<-apply(data1_1[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")],2,quantile)
+skew<-apply(data1_1[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")],2,skewness)
+kur<-apply(data1_1[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")],2,kurtosis)
+
+Estadisticos1_1<-rbind(Means,Desviacion,Q,skew,kur)
+rownames(Estadisticos1_1)<-c('Means','STD','Min','Q25','Median','Q75','Max',"Kurtosis","Skewness")
+# Estadisticos1_1
+knitr::kable(Estadisticos1_1,digits=4, caption="Covariates in pre-treatment period t=1")
+
+# t=2
+Means<-colMeans(data1_2[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")])
+Variances<-diag(var(data1_2[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")]))
+Desviacion<-sqrt(Variances)
+Q<-apply(data1_2[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")],2,quantile)
+skew<-apply(data1_2[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")],2,skewness)
+kur<-apply(data1_2[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")],2,kurtosis)
+
+Estadisticos1_2<-rbind(Means,Desviacion,Q,skew,kur)
+rownames(Estadisticos1_2)<-c('Means','STD','Min','Q25','Median','Q75','Max',"Kurtosis","Skewness")
+# Estadisticos1_2
+knitr::kable(Estadisticos1_2,digits=4, caption="Covariates in post-treatment period t=2\\label{tab8}")
+```
+
+Mentre les estadístiques per al conjunt de dades amb les covariables constants en el temps són les següents: 
+
+```{r}
+# Data with constant covariates:
+data1c<-data1
+
+# Agrupem per ID i ens quedem només amb aquelles files amb la mateixa edad, anys de llicència i woman (que de fet no haurien de canviar en cap cas). SI canvien és perquè s'ha canviat l'assegurat de la pòlissa --> passem de 11562 registres a 8152
+
+comptatge <- aggregate(data = data1c, age ~ ID, function(x) length(unique(x)))
+keep <- comptatge[comptatge$age ==1,]
+data1c <- data1c[data1c$ID %in% keep$ID,]
+
+comptatge <- aggregate(data = data1c, lic_age ~ ID, function(x) length(unique(x)))
+keep <- comptatge[comptatge$lic_age ==1,]
+data1c <- data1c[data1c$ID %in% keep$ID,]
+
+comptatge <- aggregate(data = data1c, woman ~ ID, function(x) length(unique(x)))
+keep <- comptatge[comptatge$woman ==1,]
+data1c <- data1c[data1c$ID %in% keep$ID,]
+
+# Eliminem també files que no siguin cst en el temps de les variables: parking_yes, BMzones, power100 --> passem de 8152 registres a 7810
+
+comptatge <- aggregate(data = data1c, parking_yes ~ ID, function(x) length(unique(x)))
+keep <- comptatge[comptatge$parking_yes ==1,]
+data1c <- data1c[data1c$ID %in% keep$ID,]
+
+comptatge <- aggregate(data = data1c, BMzones ~ ID, function(x) length(unique(x)))
+keep <- comptatge[comptatge$BMzones ==1,]
+data1c <- data1c[data1c$ID %in% keep$ID,]
+
+comptatge <- aggregate(data = data1c, power100 ~ ID, function(x) length(unique(x)))
+keep <- comptatge[comptatge$power100 ==1,]
+data1c <- data1c[data1c$ID %in% keep$ID,]
+
+# Descriptive statistics of covariates
+data1_1c<-data1c[data1c$Time==1,]
+data1_2c<-data1c[data1c$Time==2,]
+# t=1
+Means<-colMeans(data1_1c[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")])
+Variances<-diag(var(data1_1c[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")]))
+Desviacion<-sqrt(Variances)
+Q<-apply(data1_1c[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")],2,quantile)
+skew<-apply(data1_1c[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")],2,skewness)
+kur<-apply(data1_1c[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")],2,kurtosis)
+
+Estadisticos1_1c<-rbind(Means,Desviacion,Q,skew,kur)
+rownames(Estadisticos1_1c)<-c('Means','STD','Min','Q25','Median','Q75','Max',"Kurtosis","Skewness")
+# Estadisticos1_1c
+knitr::kable(Estadisticos1_1c,digits=4, caption="Covariates in pre-treatment period t=1")
+
+# t=2
+Means<-colMeans(data1_2c[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")])
+Variances<-diag(var(data1_2c[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")]))
+Desviacion<-sqrt(Variances)
+Q<-apply(data1_2c[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")],2,quantile)
+skew<-apply(data1_2c[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")],2,skewness)
+kur<-apply(data1_2c[,c("age","age35","lic_age","lic_age15","parking_yes","woman","BMzones","power100")],2,kurtosis)
+
+Estadisticos1_2c<-rbind(Means,Desviacion,Q,skew,kur)
+rownames(Estadisticos1_2c)<-c('Means','STD','Min','Q25','Median','Q75','Max',"Kurtosis","Skewness")
+# Estadisticos1_2c
+knitr::kable(Estadisticos1_2c,digits=4, caption="Covariates in post-treatment period t=2")
+```
+En aquest cas queden `r nrow(data1c)/2` assegurats al conjunt filtrat. 
+
+# Resultats de l'estimació Diff-in-Diff per a les reclamacions ATT
+
+## Models sense covariables
+
+### Models de regressió TWFE i OLS
+
+Estimem l'$ATT_2$ definit com:
+
+\begin{equation}
+ATT_2=E\left[Y_{i2}(1)-Y_{i2}(0)|Dcon_i=1\right]
+\end{equation}
+
+utilitzant els models de regressió TWFE i OLS sense covariables
+
+#### Variable Total
+
+```{r}
+# We estimate the two way fix effects (TWFE) model assuming parallel trend assumptions 
+# and basic assumption related with the properties of FE estimator.
+# For Total
+mod1_tot<-plm(Total~Trcon,data=data0, index = c("ID","Time"),effect = c("twoways"),model = c("within"))
+R2<-var(predict(mod1_tot))/var(data0$Total)
+res<-cbind(summary(mod1_tot)$coefficients,R2)
+knitr::kable(res,digits=4, caption="TWFE for Total variable")
+
+# If treatment are non conditionated to individuals shocks, then the model is a lm model 
+# with group, time and treatment effect
+mod1_tot_lm<-lm(Total~Time+Dcon+Trcon,data=data0)
+res<-summary(mod1_tot_lm)$coefficients
+knitr::kable(res,digits=4, caption="OLS for Total variable")
+```
+
+#### Variable Night
+
+```{r}
+# For Night
+mod1_nig<-plm(Night~Trcon,data=data0, index = c("ID","Time"),effect = c("twoways"),model = c("within"))
+R2<-var(predict(mod1_nig))/var(data0$Night)
+res<-cbind(summary(mod1_nig)$coefficients,R2)
+knitr::kable(res,digits=4, caption="TWFE for Night variable")
+
+mod1_nig_lm<-lm(Night~Time+Dcon+Trcon,data=data0)
+res<-summary(mod1_nig_lm)$coefficients
+knitr::kable(res,digits=4, caption="OLS for Night variable")
+```
+
+#### Variable Speed
+
+```{r}
+# For Speed
+mod1_spe<-plm(Speed~Trcon,data=data0, index = c("ID","Time"),effect = c("twoways"),model = c("within"))
+R2<-var(predict(mod1_spe))/var(data0$Speed)
+res<-cbind(summary(mod1_spe)$coefficients,R2)
+knitr::kable(res,digits=4, caption="TWFE for Speed variable")
+
+mod1_spe_lm<-lm(Speed~Time+Dcon+Trcon,data=data0)
+res<-summary(mod1_spe_lm)$coefficients
+knitr::kable(res,digits=4, caption="OLS for Speed variable")
+```
+
+#### Variable Urban
+
+```{r}
+# For Urban
+mod1_urb<-plm(Urban~Trcon,data=data0, index = c("ID","Time"),effect = c("twoways"),model = c("within"))
+R2<-var(predict(mod1_urb))/var(data0$Urban)
+res<-cbind(summary(mod1_urb)$coefficients,R2)
+knitr::kable(res,digits=4, caption="TWFE for Urban variable")
+
+mod1_urb_lm<-lm(Urban~Time+Dcon+Trcon,data=data0)
+res<-summary(mod1_urb_lm)$coefficients
+knitr::kable(res,digits=4, caption="OLS for Urban variable")
+```
+
+Amb aquests primers resultats s'observa que l'efecte del tractament és estadísticament significatiu únicament per a la variable `Total`, amb signe positiu, tal com s'havia trobat a l'analitzar tots els accidents de forma conjunta. Cal destacar doncs que tractar únicament amb els accidents causats per un mateix de moment és l'única ocasió que ha donat lloc a la no significació. 
+
+Com sempre a continuació realitzem uns models similars però afegint covariables.
+
+## Models amb covariables canviants en el temps
+
+### Model TWFE 
+
+Aquest model amb totes les covariables així com aquestes al temps t = 2 i canviant en el temps s'està referint al model: 
+
+\begin{equation}
+Y_{it}=\alpha_i+\delta_t+\tau \cdot Trcon_{it}+\beta \cdot X_{it}\cdot I(t=2)+\gamma \cdot X_{it}\cdot Trcon_{it}+\delta \cdot X_{it}+\epsilon_{it},
+\end{equation}
+
+
+```{r, include = FALSE}
+# Centrem les covariables
+data1$age_2_Trcon <- data1$age_2*data1$Trcon
+data1$lic_age_2_Trcon <- data1$lic_age_2*data1$Trcon
+data1$parking_yes2_Trcon <- data1$parking_yes2*data1$Trcon
+data1$woman_2_Trcon <- data1$woman_2*data1$Trcon
+data1$BMzones_2_Trcon <- data1$BMzones_2*data1$Trcon
+data1$power100_2_Trcon <- data1$power100_2*data1$Trcon
+
+data1_ID <- aggregate(data1,by = list(data1$ID),FUN = mean)
+data1_ID<-data1_ID[,-c(1,3)] # treu "Group.1" (variable creada per la funció prèvia) i Time
+colnames(data1_ID)<-c("ID","TotalID", "NightID", "SpeedID", "UrbanID", "DconID", "TrconID", "ageID", "age35ID", "lic_ageID", "lic_age15ID", "parking_yesID", "womanID", "BMzonesID", "power100ID", "age_2ID", "age35_2ID", "lic_age_2ID", "lic_age15_2ID", "parking_yes2ID", "woman_2ID", "BMzones_2ID", "power100_2ID", "age_2_TrconID", "lic_age_2_TrconID", "parking_yes2_TrconID", "woman_2_TrconID", "BMzones_2_TrconID", "power100_2_TrconID")
+data1_tim <- aggregate(data1,by = list(data1$Time),FUN = mean)
+data1_tim<-data1_tim[,-c(1,2)]
+colnames(data1_tim)<-c("Time","Totalt", "Nightt", "Speedt", "Urbant", "Dcont", "Trcont", "aget", "age35t", "lic_aget", "lic_age15t", "parking_yest", "womant", "BMzonest", "power100t", "age_2t", "age35_2t", "lic_age_2t", "lic_age15_2t", "parking_yes2t", "woman_2t", "BMzones_2t", "power100_2t", "age_2_Trcont", "lic_age_2_Trcont", "parking_yes2_Trcont", "woman_2_Trcont", "BMzones_2_Trcont", "power100_2_Trcont")
+data1_final<-left_join(data1,data1_ID,by="ID")
+data1_final<-left_join(data1_final,data1_tim,by="Time")
+
+n <- nrow(data1)
+data1_centrades<-data1_final[,3:30]-data1_final[,31:58]-data1_final[,59:86]
+data1_timID <- t(replicate(n,colMeans(data1_final[,3:30])))
+data1_centrades<-data1_centrades+ data1_timID # Replica les mitjanes en totes les files
+colMeans(data1_centrades) # Comprovació de que totes les variables tenen mitjana 0
+```
+
+
+#### Variable Total amb l'efecte de covariables
+
+En primer lloc creem el model amb tots els efectes additius i multiplicatius de les covariables. Es pot clarament observar que no tots els components del model són significatius en tenir pvalors molt superiors al 0.05 (agafant un nivell de confiança del $95\%$). Així doncs, s'ha decidit seleccionar el millor model minimitzant l'AIC amb l'ajuda de la funció stepAIC. El resultat del millor model mostra un valor estimat per l'$ATT_2$ no significatiu. Tanmateix, es mostra dues variables amb interaccions rellevants amb `Trcon`: `woman` i `power100`. D'aquestes, només la segona ha acabat desembocant en un $ATT_2$ significatiu i positiu, indicant que els usuaris que han tingut un accident causat per tercers i que condueixen un cotxe petit passen a recòrrer més quilòmetres després d'haver-lo tingut, en comparació als cotxes grans. Observant la gràfica es pot notar que en realitat el que passa és que els usuaris que no han tingut cap accident passen a recòrrer menys quilòmetres de forma significativa, mentre els que n'han tingut, tot i que decreixen, no ho fan amb tanta significació, sobretot pel que fa als cotxes petits. Cal fer notar que els cotxes petits de forma sistemàtica fan menys quilòmetres que els grans. Es podria dir doncs que els cotxes petits que recòrren molts quilòmetres ho fan per necessitat i tenir un accident causat per tercers no els frena. 
+
+L'efecte de la variable `parking_yes` a t=2 és significativa i positiva, com passava en tots els altres cassos analitzats. Això implica que aquells usuaris que tenen pàrquing, recorren més quilòmetres totals, el qual té molt sentit ja que generalment són aquells que tenen més diners i que per tant es poden permetre més gasolina i més quilòmetres. Tanmateix, la variable `parking_yes2` en realitat mostra un efecte negatiu. Això indica que l'efecte entre t=1 i t=2 s'ha reduit, és a dir, que durant el primer període es recorrien molts més quilòmetres totals si es tenia pàrquing, mentre aquest efecte tot i que continua sent positiu, ha disminuit durant el segon període. 
+
+Contràriament, les dones recòrren menys quilòmetres totals que els homes, tot i que la diferència entre homes i dones es redueix durant el període de post-tractament. A major edat i magnitud del cotxe, més quilòmetres es recorren.
+
+```{r}
+# For Total 
+mod2_tot_lm <- lm(Total ~ Trcon + age + age_2 + lic_age + lic_age_2 + parking_yes + parking_yes2 + woman + woman_2 + BMzones + BMzones_2 + power100 + power100_2 + age_2_Trcon+ lic_age_2_Trcon + parking_yes2_Trcon + woman_2_Trcon  +BMzones_2_Trcon+ power100_2_Trcon -1 , data = data1_centrades)
+
+R2<-(var(predict(mod2_tot_lm) + data1_ID$TotalID + data1_tim$Totalt - data1_timID[,1]))/var(data1$Total) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_tot_lm))-1))
+res<-cbind(summary(mod2_tot_lm)$coefficients,R2,R2Adj, AIC = AIC(mod2_tot_lm))
+knitr::kable(res,digits=4, caption="TWFE for Total variable with covariates")
+mod2_tot_lm_red <- stepAIC(mod2_tot_lm, trace = FALSE, scope = list(lower = formula("Total ~ Trcon"),
+                                 upper = formula(mod2_tot_lm)))
+
+R2<-(var(predict(mod2_tot_lm_red) + data1_ID$TotalID + data1_tim$Totalt - data1_timID[,1]))/var(data1$Total) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_tot_lm_red))-1))
+res<-cbind(summary(mod2_tot_lm_red)$coefficients,R2,R2Adj, AIC = AIC(mod2_tot_lm_red))
+knitr::kable(res,digits=4, caption="TWFE for Total variable with reduced covariates")
+
+signif <- function(mod,r) {
+  coef <- as.matrix(coefficients(mod))
+  tau<-r%*%coef # tau
+  # Inference
+  covvar_beta<-as.matrix(vcov(mod))
+  var<-r%*%covvar_beta%*%t(t(r)) # var
+  Z<-tau/sqrt(var)
+  p_value<-1-pnorm(abs(tau/sqrt(var)))
+  res<-as.matrix(c(tau,Z,p_value))
+  rownames(res)<-c("coef","Z","p_value")
+  return(res)
+}
+
+# woman: 
+res_1 <- signif(mod2_tot_lm_red, c(1,0,0,0,1,1,0,1,0))
+#power100
+res_2 <- signif(mod2_tot_lm_red, c(1,0,0,0,0,0,1,0,1))
+
+# Imprimim els resultats: 
+res_effects<-cbind(res_1, res_2)
+colnames(res_effects)<-c("woman", "power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+
+
+```{r, out.width="70%", fig.align = 'center'}
+# power100
+Means<-aggregate(Total~Time+Dcon+power100,data=data1,mean)
+Means<-as.data.frame(Means)
+
+Means$Dcon=as.factor(Means$Dcon)
+Means$time=as.factor(Means$Time)
+p1<-ggplot(data=Means[Means$power100 == 0,], aes(x=Time, y=Total, group=Dcon)) +
+  geom_line(aes(linetype=Dcon),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "Total yearly km", x = "Time", title = "Potència>100")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+p2<-ggplot(data=Means[Means$power100 == 1,], aes(x=Time, y=Total, group=Dcon)) +
+  geom_line(aes(linetype=Dcon),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "Total yearly km", x = "Time", title = "Potència<=100")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+
+grid.arrange(p1, p2, ncol=2)
+```
+
+Com a anàlisis extres, com fet en tots els cassos anteriors, es mirarà què passa amb els models quan a aquests se li elimina `parking_yes` en cas que mostri una interacció significativa i quina variable és més important per a saber el nombre total de quilòmetres recorreguts d'un assegurat, l'edat o els anys que fa que pot conduir. 
+
+El primer cas esmentat no es té en compte en aquesta secció perquè cap variable ha resultat ser significativa. D'altra banda, el model deixant únicament la variable edat és exactament el mateix que quan teníem totes dues variables, mentre al deixar únicament els anys de llicència, s'observa que l'ajust ($R^2_{Adj}$) augmenta, tot i que l'AIC també. L'efecte de tractament continua sense ser significatiu, així com la variable `power100` és la única que continua mostrant un $ATT_2$ rellevant. La variable `lic_age_2` ha "reemplaçat" el lloc de `age_2`, tot i que el seu coeficient no és significatiu. Tenint en compte totes les observacions realitzades s'arriba a la conclusió que totes dues servirien d'igual manera per a poder explicar com reaccionen els usuaris enfront d'un accident en quan als quilòmetres totals realitzats. 
+
+```{r}
+mod2_tot_lm_lic <- lm(Total ~ Trcon + lic_age + lic_age_2 + parking_yes + parking_yes2 + woman + woman_2 + BMzones + BMzones_2 + power100 + power100_2 + lic_age_2_Trcon + parking_yes2_Trcon + woman_2_Trcon  +BMzones_2_Trcon+ power100_2_Trcon -1  , data = data1_centrades)
+
+mod2_tot_lm_lic_red <- stepAIC(mod2_tot_lm_lic, trace = FALSE, scope = list(lower = formula("Total ~ Trcon"), upper = formula(mod2_tot_lm_lic)))
+
+R2<-(var(predict(mod2_tot_lm_lic_red) + data1_ID$TotalID + data1_tim$Totalt - data1_timID[,1]))/var(data1$Total) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_tot_lm_lic_red))-1))
+res<-cbind(summary(mod2_tot_lm_lic_red)$coefficients,R2,R2Adj, AIC = AIC(mod2_tot_lm_lic_red))
+knitr::kable(res,digits=4, caption="TWFE for Total variable with reduced covariates without age")
+
+# woman: 
+res_1 <- signif(mod2_tot_lm_lic_red, c(1,0,0,0,1,1,0,0,1,0,0))
+#BMzones
+res_2 <- signif(mod2_tot_lm_lic_red, c(1,0,0,0,0,0,1,0,0,1,0))
+# power100
+res_3 <- signif(mod2_tot_lm_lic_red, c(1,0,0,0,0,0,0,1,0,0,1))
+
+# Imprimim els resultats: 
+res_effects<-cbind(res_1, res_2, res_3)
+colnames(res_effects)<-c("woman", "BMzones", "power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+#### Variable Night amb l'efecte de covariables
+
+El model complet amb totes les covariables i interaccions possibles, així com la seva reducció dona lloc als següents resultats. En aquest cas s'ha obtingut un pvalor no significatiu per al coeficient `Trcon`, indicant que tenir un accident causat per tercers o no, no dona lloc a canviar el percentatge de quilòmetres totals que es recorren de forma nocturna. Pel que fa als coeficients sense interaccions comentar que la variable `age` presenta un efecte negatiu, tot i que molt proper a 0. Això indica que a mesura que els usuaris creixen, condueixen un percentatge de quilòmetres menor durant la nit, tot i que de forma poc notòria, a més a més, durant el segon període és gairebé igualat. També es pot observar que tenir pàrquing i conduir per Madrid o Barcelona augmenta aquest percentatge de conducció nocturna, mentre ser dona o tenir un cotxe amb baixa potència el disminueix. Les conclusions per a aquestes variables són idèntiques a les que s'obtenia a l'analitzar tots els accidents de forma conjunta, així com a l'analitzar únicament els accidents causats per un mateix. 
+
+D'altra banda, es nota que s'ha inclòs tres interaccions, tot i que només una d'elles ha resultat ser significativa: `parking_yes`. Amb la gràfica es nota que els comporatment són clarament contràris. En un innici destacar que els usuaris que no disposen de pàrquing condueixen més quilòmetres, dins dels totals, de forma nocturna. A més a més, en tots dos cassos els usuaris que han tingut algun accident causat per tercers condueixen un percentatge major dels quilòmetres de forma nocturna. No obstant això, els usuaris amb pàrquing disminueixe la diferència fins a quasi coincidir totes dues línies del període de pre a post-tractament, mentre els usuaris que no tenen cotxe realitzen un comportament invers, augmentant la diferència entre els dos grups de forma significativa en el període de post tractament. 
+
+```{r}
+mod2_nig_lm <- lm(Night ~ Trcon + age + age_2 + lic_age + lic_age_2 + parking_yes + parking_yes2 + woman + woman_2 + BMzones + BMzones_2 + power100 + power100_2 + age_2_Trcon+ lic_age_2_Trcon + parking_yes2_Trcon + woman_2_Trcon  +BMzones_2_Trcon+ power100_2_Trcon -1 , data = data1_centrades)
+
+R2<-(var(predict(mod2_nig_lm) + data1_ID$NightID + data1_tim$Nightt - data1_timID[,2]))/var(data1$Night) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_nig_lm))-1))
+res<-cbind(summary(mod2_nig_lm)$coefficients,R2,R2Adj, AIC = AIC(mod2_nig_lm))
+knitr::kable(res,digits=4, caption="TWFE for Night variable with covariates")
+
+mod2_nig_lm_red <- stepAIC(mod2_nig_lm, trace = FALSE,
+                           scope = list(lower = formula("Night ~ Trcon"),
+                                 upper = formula(mod2_nig_lm))) 
+R2<-(var(predict(mod2_nig_lm_red) + data1_ID$NightID + data1_tim$Nightt - data1_timID[,2]))/var(data1$Night) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_nig_lm_red))-1))
+res<-cbind(summary(mod2_nig_lm_red)$coefficients,R2,R2Adj, AIC = AIC(mod2_nig_lm_red))
+knitr::kable(res,digits=4, caption="TWFE for Night variable with reduced covariates")
+
+# Suma els efectes de les variables. Si alguna no hi és en el model, és com si sumes 0.
+# lic_age: 
+res_1 <- signif(mod2_nig_lm_red, c(1,0,0,1,0,0,0,0,0,1,0,0))
+# parking_yes
+res_2 <- signif(mod2_nig_lm_red, c(1,0,0,0,1,0,0,0,0,0,1,0))
+# power100
+res_3 <- signif(mod2_nig_lm_red, c(1,0,0,0,0,0,0,0,1,0,0,1))
+
+# Imprimim els resultats: 
+res_effects<-cbind(res_1, res_2, res_3)
+colnames(res_effects)<-c("lic_age", "parking_yes", "power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+
+```{r, out.width="70%", fig.align = 'center'}
+# parking_yes
+Means<-aggregate(Night~Time+Dcon+parking_yes,data=data1,mean)
+Means<-as.data.frame(Means)
+
+Means$Dcon=as.factor(Means$Dcon)
+Means$time=as.factor(Means$Time)
+p1<-ggplot(data=Means[Means$parking_yes == 0,], aes(x=Time, y=Night, group=Dcon)) +
+  geom_line(aes(linetype=Dcon),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% night km", x = "Time", title = "No pàrquing")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+p2<-ggplot(data=Means[Means$parking_yes == 1,], aes(x=Time, y=Night, group=Dcon)) +
+  geom_line(aes(linetype=Dcon),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% night km", x = "Time", title = "Pàrquing")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+
+grid.arrange(p1, p2, ncol=2)
+```
+
+Els resultats del mateix model però eliminant la variable `parking_yes` mostren que tot i que l'ajust del model disminueix, l'efecete del tractament del model ha passat a ser significatiu i negatiu. A més a més, les dues variables que anteriorment surtien com a rellevants però acabaven mostrant efectes no significatius, ara en tots dos cassos mostren un $ATT_2$ significatiu i negatiu. Aquestes observacions duen a la conclusió que la variable `parking_yes` amagava molta informació i per tant en la següent secció, a l'analitzar quina variable és millor, si l'edat o els anys de llicència per a explicar aquesta variable dependent, també es tindrà en compte l'eliminació i el reteniment d'aquesta variable. 
+
+
+```{r}
+mod2_nig_lm_par <- lm(Night ~ Trcon + age + age_2 + lic_age + woman + woman_2 + BMzones_2 + power100_2 + lic_age_2_Trcon + power100_2_Trcon - 1, data = data1_centrades)
+
+R2<-(var(predict(mod2_nig_lm_par) + data1_ID$NightID + data1_tim$Nightt - data1_timID[,2]))/var(data1$Night) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_nig_lm_par))-1))
+res<-cbind(summary(mod2_nig_lm_par)$coefficients,R2,R2Adj, AIC = AIC(mod2_nig_lm_par))
+knitr::kable(res,digits=4, caption="TWFE for Night variable with covariates without parking_yes")
+
+# Suma els efectes de les variables. Si alguna no hi és en el model, és com si sumes 0.
+# lic_age: 
+res_1 <- signif(mod2_nig_lm_par, c(1,0,0,1,0,0,0,0,1,0))
+# power100
+res_3 <- signif(mod2_nig_lm_par, c(1,0,0,0,0,0,0,1,0,1))
+
+# Imprimim els resultats: 
+res_effects<-cbind(res_1, res_3)
+colnames(res_effects)<-c("lic_age", "power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+Es nota que eliminar la variable `parking_yes` en tot cas dona lloc a obtenir un efecte del tractament quasi bé significatiu o significatiu i negatiu. A més a més, dona lloc a que la variable que mesura el pas del temps (`age` o `lic_age`) i `power100` donguin lloc a un $ATT_2$ significatiu. D'altra banda, si es manté únicament `parking_yes` és significativa o quasi. Pel que fa als ajustos, es nota clarament que mantenir l'edat dona lloc a un major ajust, concloent doncs que és millor per a explicar la variable dependent analitzada. 
+
+```{r}
+# Age
+mod2_nig_lm_age <- lm(Night ~ Trcon + age + age_2 +parking_yes + parking_yes2 + woman + woman_2 + BMzones + BMzones_2 + power100 + power100_2 + age_2_Trcon+ parking_yes2_Trcon + woman_2_Trcon+BMzones_2_Trcon+ power100_2_Trcon -1 , data = data1_centrades)
+
+mod2_nig_lm_age_red <- stepAIC(mod2_nig_lm_age, trace = FALSE,
+                           scope = list(lower = formula("Night ~ Trcon"),
+                                 upper = formula(mod2_nig_lm_age)))
+
+R2<-(var(predict(mod2_nig_lm_age_red) + data1_ID$NightID + data1_tim$Nightt - data1_timID[,2]))/var(data1$Night) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_nig_lm_age_red))-1))
+res<-cbind(summary(mod2_nig_lm_age_red)$coefficients,R2,R2Adj, AIC = AIC(mod2_nig_lm_age_red))
+knitr::kable(res,digits=4, caption="TWFE for Night variable with reduced covariates without lic_age")
+
+# age_2_Tr
+res_1 <- signif(mod2_nig_lm_age_red, as.vector(c(1,1,1,0,0,0,0,0,1,0,0)))
+# parking_yes
+res_2 <- signif(mod2_nig_lm_age_red, as.vector(c(1,0,0,1,0,0,0,0,0,1,0)))
+# power100
+res_3 <- signif(mod2_nig_lm_age_red, as.vector(c(1,0,0,0,0,0,0,1,0,0,1)))
+
+res_effects<-cbind(res_1, res_2, res_3)
+colnames(res_effects)<-c("age", "parking_yes", "power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+```{r}
+# Age i no park
+mod2_nig_lm_age2 <- lm(Night ~ Trcon + age + age_2 + woman + woman_2 + BMzones + BMzones_2 + power100 + power100_2 + age_2_Trcon + woman_2_Trcon+BMzones_2_Trcon+ power100_2_Trcon -1 , data = data1_centrades)
+
+mod2_nig_lm_age_red2 <- stepAIC(mod2_nig_lm_age2, trace = FALSE,
+                           scope = list(lower = formula("Night ~ Trcon"),
+                                 upper = formula(mod2_nig_lm_age2)))
+
+R2<-(var(predict(mod2_nig_lm_age_red2) + data1_ID$NightID + data1_tim$Nightt - data1_timID[,2]))/var(data1$Night) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_nig_lm_age_red2))-1))
+res<-cbind(summary(mod2_nig_lm_age_red2)$coefficients,R2,R2Adj, AIC = AIC(mod2_nig_lm_age_red2))
+knitr::kable(res,digits=4, caption="TWFE for Night variable with reduced covariates without lic_age and parking_yes")
+
+# age_2_Tr
+res_1 <- signif(mod2_nig_lm_age_red2, as.vector(c(1,1,1,0,0,0,0,1,0)))
+# power100
+res_3 <- signif(mod2_nig_lm_age_red2, as.vector(c(1,0,0,0,0,0,1,0,1)))
+
+res_effects<-cbind(res_1, res_3)
+colnames(res_effects)<-c("age", "power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+
+```{r}
+# Anys llicència
+mod2_nig_lm_lic <- lm(Night ~ Trcon + lic_age + lic_age_2 + parking_yes + parking_yes2 + woman + woman_2 + BMzones + BMzones_2 + power100 + power100_2 + lic_age_2_Trcon + parking_yes2_Trcon + woman_2_Trcon  +BMzones_2_Trcon+ power100_2_Trcon -1 , data = data1_centrades)
+mod2_nig_lm_lic_red <- stepAIC(mod2_nig_lm_lic, trace = FALSE,
+                           scope = list(lower = formula("Night ~ Trcon"),
+                                 upper = formula(mod2_nig_lm_lic)))
+R2<-(var(predict(mod2_nig_lm_lic_red) + data1_ID$NightID + data1_tim$Nightt - data1_timID[,2]))/var(data1$Night) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_nig_lm_lic_red))-1))
+res<-cbind(summary(mod2_nig_lm_lic_red)$coefficients,R2,R2Adj, AIC = AIC(mod2_nig_lm_lic_red))
+knitr::kable(res,digits=4, caption="TWFE for Night variable with reduced covariates without age")
+
+# lic_age: 
+res_1 <- signif(mod2_nig_lm_lic_red, c(1,1,1,0,0,0,0,0,1,0,0))
+# parking_yes
+res_2 <- signif(mod2_nig_lm_lic_red, c(1,0,0,1,0,0,0,0,0,1,0))
+# power100
+res_3 <- signif(mod2_nig_lm_lic_red, c(1,0,0,0,0,0,0,1,0,0,1))
+
+# Imprimim els resultats: 
+res_effects<-cbind(res_1, res_2, res_3)
+colnames(res_effects)<-c("lic_age", "parking_yes", "power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+```{r}
+# Anys llicència i no park
+mod2_nig_lm_lic2 <- lm(Night ~ Trcon + lic_age + lic_age_2 + woman + woman_2 + BMzones + BMzones_2 + power100 + power100_2 + lic_age_2_Trcon + woman_2_Trcon  +BMzones_2_Trcon+ power100_2_Trcon -1 , data = data1_centrades)
+mod2_nig_lm_lic_red2 <- stepAIC(mod2_nig_lm_lic2, trace = FALSE,
+                           scope = list(lower = formula("Night ~ Trcon"),
+                                 upper = formula(mod2_nig_lm_lic2)))
+R2<-(var(predict(mod2_nig_lm_lic_red2) + data1_ID$NightID + data1_tim$Nightt - data1_timID[,2]))/var(data1$Night) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_nig_lm_lic_red2))-1))
+res<-cbind(summary(mod2_nig_lm_lic_red2)$coefficients,R2,R2Adj, AIC = AIC(mod2_nig_lm_lic_red2))
+knitr::kable(res,digits=4, caption="TWFE for Night variable with reduced covariates without age and parking_yes")
+
+# lic_age: 
+res_1 <- signif(mod2_nig_lm_lic_red2, c(1,1,1,0,0,0,0,0,1,0))
+# power100
+res_3 <- signif(mod2_nig_lm_lic_red2, c(1,0,0,0,0,0,1,1,0,1))
+
+# Imprimim els resultats: 
+res_effects<-cbind(res_1, res_3)
+colnames(res_effects)<-c("lic_age", "power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+
+#### Variable Speed amb l'efecte de covariables
+
+Per a la variable dependent `Speed` s'observa un efecte del tractament altre cop no significatiu. També es nota que a major edat, amb menys probabilitat es condueix per sobre dels límits de velocitat, mentre la seguretat al volant incrementa amb els anys de llicència. Tal com esperat, les dones trenquen menys els límits de velocitat, així com aquells usuaris que tenen cotxes petits. Conduir per Madrid o Barcelona també mostra un signe negatiu, segurament degut a la major presència de radars en aquestes ciutats. Finalment, tenir pàrquing sembla donar lloc a saltar-se més els límits de velocitat.
+
+Pel que fa a les interaccions es nota que tal com passava per tots els accidents de forma conjunta la variable `power100` és la única que surt com a rellevant en el model. A més a més, el seu efecte de tractament és significatiu i negatiu. Les gràfiques mostren que tots els usuaris redueixen la velocitat de t=1 a t=2. Tanmateix, es nota que els usuaris que condueixen cotxes grans i han tingut un accident en un inici conduien més ràpid, mentre a t=2 es troben inclús per sota d'aquells que no han tingut cap accident, indicant que l'accident els ha fet frenar, encara que no hagi estat culpa seva. pel que fa als usuaris que codueixen cotxes petits, els usuaris que han tingut algun accident en tot moment condueixen a una velocitat menor, però la diferència disminueix a t=2, igualant-se amb aquells que no han tingut cap accident. Finalment, fer notar que el percentatge de cops que un usuari amb un cotxe gran s'ha saltat els límits de velocitat al final del segon període continua tot i així sent més alt que el percentatge inicial pels cotxes petits. 
+
+```{r}
+mod2_spe_lm <- lm(Speed ~ Trcon + age + age_2 + lic_age + lic_age_2 + parking_yes + parking_yes2 + woman + woman_2 + BMzones + BMzones_2 + power100 + power100_2 + age_2_Trcon+ lic_age_2_Trcon + parking_yes2_Trcon + woman_2_Trcon  +BMzones_2_Trcon+ power100_2_Trcon-1 , data = data1_centrades)
+
+R2<-(var(predict(mod2_spe_lm) + data1_ID$SpeedID + data1_tim$Speedt - data1_timID[,3]))/var(data1$Speed) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_spe_lm))-1))
+res<-cbind(summary(mod2_spe_lm)$coefficients,R2,R2Adj, AIC = AIC(mod2_spe_lm))
+knitr::kable(res,digits=4, caption="TWFE for Speed variable with covariates")
+
+mod2_spe_lm_red <- stepAIC(mod2_spe_lm, trace = FALSE, 
+                           scope = list(lower = formula("Speed ~ Trcon"),
+                                 upper = formula(mod2_spe_lm))) 
+R2<-(var(predict(mod2_spe_lm_red) + data1_ID$SpeedID + data1_tim$Speedt - data1_timID[,3]))/var(data1$Speed) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_spe_lm_red))-1))
+res<-cbind(summary(mod2_spe_lm_red)$coefficients,R2,R2Adj, AIC = AIC(mod2_spe_lm_red))
+knitr::kable(res,digits=4, caption="TWFE for Speed variable with reduced covariates")
+
+# power100:
+res_1 <- signif(mod2_spe_lm_red, c(1,0,0,0,0,0,0,0,1,1,1))
+
+# Imprimim els resultats: 
+res_effects<-cbind(res_1)
+colnames(res_effects)<-c("power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+```{r, out.width="70%", fig.align = 'center'}
+# power100
+Means<-aggregate(Speed~Time+Dcon+power100,data=data1,mean)
+Means<-as.data.frame(Means)
+
+Means$Dcon=as.factor(Means$Dcon)
+Means$time=as.factor(Means$Time)
+p5<-ggplot(data=Means[Means$power100 == 0,], aes(x=Time, y=Speed, group=Dcon)) +
+  geom_line(aes(linetype=Dcon),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% Over-speed limits", x = "Time", title = "Potència>100")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+p6<-ggplot(data=Means[Means$power100 == 1,], aes(x=Time, y=Speed, group=Dcon)) +
+  geom_line(aes(linetype=Dcon),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% Over-speed limits", x = "Time", title = "Potència<=100")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+
+grid.arrange(p5, p6, ncol=2)
+```
+
+Els models deixant únicament una de les variables que mesura el pas del temps són molt similars en resultar tots dos en la no significació de l'efecte de tractament i en una única interacció `power100` en tot moment significativa i negativa. Així doncs, tenint en compte que l'ajust del model és millor si es mantenen els anys de llicència es conclourà que aquesta és millor per a tractar amb la variable dependent `Speed`. 
+
+```{r}
+# Age
+mod2_spe_lm_age <- lm(Speed ~ Trcon + age + age_2 +parking_yes + parking_yes2 + woman + woman_2 + BMzones + BMzones_2 + power100 + power100_2 + age_2_Trcon+ parking_yes2_Trcon + woman_2_Trcon  +BMzones_2_Trcon+ power100_2_Trcon -1 , data = data1_centrades)
+
+mod2_spe_lm_age_red <- stepAIC(mod2_spe_lm_age, trace = FALSE,
+                           scope = list(lower = formula("Speed ~ Trcon"),
+                                 upper = formula(mod2_spe_lm_age)))
+
+R2<-(var(predict(mod2_spe_lm_age_red) + data1_ID$SpeedID + data1_tim$Speedt - data1_timID[,3]))/var(data1$Speed) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_spe_lm_age_red))-1))
+res<-cbind(summary(mod2_spe_lm_age_red)$coefficients,R2,R2Adj, AIC = AIC(mod2_spe_lm_age_red))
+knitr::kable(res,digits=4, caption="TWFE for Speed variable with reduced covariates without lic_age")
+
+#power100
+res_1 <- signif(mod2_spe_lm_age_red, c(1,0,0,0,0,0,0,1,1,1))
+
+res_effects<-cbind(res_1)
+colnames(res_effects)<-c("power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+
+
+```{r}
+# Anys llicència
+mod2_spe_lm_lic <- lm(Speed ~ Trcon + lic_age + lic_age_2 + parking_yes + parking_yes2 + woman + woman_2 + BMzones + BMzones_2 + power100 + power100_2 + lic_age_2_Trcon + parking_yes2_Trcon + woman_2_Trcon  +BMzones_2_Trcon+ power100_2_Trcon -1 , data = data1_centrades)
+
+mod2_spe_lm_lic_red <- stepAIC(mod2_spe_lm_lic, trace = FALSE,
+                           scope = list(lower = formula("Speed ~ Trcon"),
+                                 upper = formula(mod2_spe_lm_lic)))
+
+R2<-(var(predict(mod2_spe_lm_lic_red) + data1_ID$SpeedID + data1_tim$Speedt - data1_timID[,3]))/var(data1$Speed) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_spe_lm_lic_red))-1))
+res<-cbind(summary(mod2_spe_lm_lic_red)$coefficients,R2,R2Adj, AIC = AIC(mod2_spe_lm_lic_red))
+knitr::kable(res,digits=4, caption="TWFE for Speed variable with reduced covariates without age")
+
+#power100
+res_1 <- signif(mod2_spe_lm_lic_red, c(1,0,0,0,0,0,0,1,1,1))
+
+res_effects<-cbind(res_1)
+colnames(res_effects)<-c("power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+
+#### Variable Urban amb l'efecte de covariables
+
+L'estimador de l'efecte del tractament és negatiu i significatiu, és a dir, aquest model conclou que si es té un accident causat per tercers, el percentatge de quilòmetres que es passen a conduir per via urbana decreix. Pel que fa a les variables sense interaccions podem veure que a major edat i anys de llicència, es condueix menys per vies urbanes. Conduir per Madrid o Barcelona implica conduir un percentatge menor per vies urbanes i finalment tenir un cotxe amb baixa potència, conduir-ne més.
+
+Pel que fa a les interaccions, dues d'elles han sortit com a rellevants en el model: `woman` i `power100` amb `Trcon`. Tanmateix, totes dues han desembocat en $ATT_2$ no significatius. 
+
+```{r}
+mod2_urb_lm <- lm(Urban ~ Trcon + age + age_2 + lic_age + lic_age_2 + parking_yes + parking_yes2 + woman + woman_2 + BMzones + BMzones_2 + power100 + power100_2 + age_2_Trcon+ lic_age_2_Trcon + parking_yes2_Trcon + woman_2_Trcon  +BMzones_2_Trcon+ power100_2_Trcon -1 , data = data1_centrades)
+
+R2<-(var(predict(mod2_urb_lm) + data1_ID$UrbanID + data1_tim$Urbant - data1_timID[,4]))/var(data1$Urban) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_urb_lm))-1))
+res<-cbind(summary(mod2_urb_lm)$coefficients,R2,R2Adj, AIC = AIC(mod2_urb_lm))
+knitr::kable(res,digits=4, caption="TWFE for Urban variable with covariates")
+
+mod2_urb_lm_red <- stepAIC(mod2_urb_lm, trace = FALSE, 
+                           scope = list(lower = formula("Urban ~ Trcon"),
+                                 upper = formula(mod2_urb_lm))) 
+R2<-(var(predict(mod2_urb_lm_red) + data1_ID$UrbanID + data1_tim$Urbant - data1_timID[,4]))/var(data1$Urban) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_urb_lm_red))-1))
+res<-cbind(summary(mod2_urb_lm_red)$coefficients,R2,R2Adj, AIC = AIC(mod2_urb_lm_red))
+knitr::kable(res,digits=4, caption="TWFE for Urban variable with reduced covariates")
+
+# woman:
+res_1 <- signif(mod2_urb_lm_red, c(1,0,0,0,0,0,0,0,0,1,0))
+# power<=100:
+res_2 <- signif(mod2_urb_lm_red, c(1,0,0,0,0,0,0,1,1,0,1))
+
+res_effects<-cbind(res_1,res_2)
+colnames(res_effects)<-c("woman","power_100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+
+Finalment, pel que fa a quina variable és millor per a estudiar el percentatge de quilòmetres que es recorren per via urbana, `age` o `lic_age`, es nota que tots dos models donen lloc a un efecte del tractament significatiu, negatiu i de magnitud molt similar. Així mateix, tots dos models ensenyen com a rellevants les mateixes variables que les anteriorment mencionades, tot i que en tots els cassos desemboquen en $ATT_2$ no significatius. L'ajust és millor pel model que conté l'edat. Es conclou doncs que aquesta és millor per a analitzar la variable dependent `Urban`. 
+
+```{r}
+# Age
+mod2_urb_lm_age <- lm(Urban ~ Trcon + age + age_2 +parking_yes + parking_yes2 + woman + woman_2 + BMzones + BMzones_2 + power100 + power100_2 + age_2_Trcon+ parking_yes2_Trcon + woman_2_Trcon+BMzones_2_Trcon+ power100_2_Trcon -1 , data = data1_centrades)
+
+mod2_urb_lm_age_red <- stepAIC(mod2_urb_lm_age, trace = FALSE,
+                           scope = list(lower = formula("Urban ~ Trcon"),
+                                 upper = formula(mod2_urb_lm_age)))
+
+R2<-(var(predict(mod2_urb_lm_age_red) + data1_ID$UrbanID + data1_tim$Urbant - data1_timID[,4]))/var(data1$Urban) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_urb_lm_age_red))-1))
+res<-cbind(summary(mod2_urb_lm_age_red)$coefficients,R2,R2Adj, AIC = AIC(mod2_urb_lm_age_red))
+knitr::kable(res,digits=4, caption="TWFE for Urban variable with reduced covariates without lic_age")
+
+# woman
+res_1 <- signif(mod2_urb_lm_age_red, as.vector(c(1,0,0,0,0,0,0,0,1,0)))
+# power100_2_Tr
+res_2 <- signif(mod2_urb_lm_age_red, as.vector(c(1,0,0,0,0,0,1,1,0,1)))
+
+res_effects<-cbind(res_1, res_2)
+colnames(res_effects)<-c("woman", "power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+
+```{r}
+# Anys llicència
+mod2_urb_lm_lic <- lm(Urban ~ Trcon + lic_age + lic_age_2 + parking_yes + parking_yes2 + woman + woman_2 + BMzones + BMzones_2 + power100 + power100_2 + lic_age_2_Trcon + parking_yes2_Trcon + woman_2_Trcon  +BMzones_2_Trcon+ power100_2_Trcon -1 , data = data1_centrades)
+
+mod2_urb_lm_lic_red <- stepAIC(mod2_urb_lm_lic, trace = FALSE,
+                           scope = list(lower = formula("Urban ~ Trcon"),
+                                 upper = formula(mod2_urb_lm_lic)))
+
+R2<-(var(predict(mod2_urb_lm_lic_red) + data1_ID$UrbanID + data1_tim$Urbant - data1_timID[,4]))/var(data1$Urban) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod2_urb_lm_lic_red))-1))
+res<-cbind(summary(mod2_urb_lm_lic_red)$coefficients,R2,R2Adj, AIC = AIC(mod2_urb_lm_lic_red))
+knitr::kable(res,digits=4, caption="TWFE for Urban variable with reduced covariates without age")
+
+# woman
+res_1 <- signif(mod2_urb_lm_lic_red, as.vector(c(1,0,0,0,0,0,1,0)))
+# power100_2_Tr
+res_2 <- signif(mod2_urb_lm_lic_red, as.vector(c(1,0,0,0,1,1,0,1)))
+
+res_effects<-cbind(res_1, res_2)
+colnames(res_effects)<-c("woman", "power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+## Models amb covariables constants en el temps
+
+A continuació, es vol dur a terme un anàlisi similar al fet anteriorment però considerant les variables constants en el temps. Així doncs, per a poder-ho fer, es seleccionaran només aquells registres que tinguin totes les covariables constants. 
+
+### Model TWFE
+
+En aquest cas el model implementat és el següent:
+
+\begin{equation}
+Y_{it}=\alpha_i+\delta_t+\tau \cdot Trcon_{it}+\beta \cdot X_{it}\cdot I(t=2)+\gamma \cdot X_{it}\cdot Trcon_{it}+\epsilon_{it}
+\end{equation}
+
+
+```{r, include = FALSE}
+# Centrem les covariables
+data1c$age_2_Trcon <- data1c$age_2*data1c$Trcon
+data1c$lic_age_2_Trcon <- data1c$lic_age_2*data1c$Trcon
+data1c$parking_yes2_Trcon <- data1c$parking_yes2*data1c$Trcon
+data1c$woman_2_Trcon <- data1c$woman_2*data1c$Trcon
+data1c$BMzones_2_Trcon <- data1c$BMzones_2*data1c$Trcon
+data1c$power100_2_Trcon <- data1c$power100_2*data1c$Trcon
+
+data1c_ID <- aggregate(data1c,by = list(data1c$ID),FUN = mean)
+data1c_ID<-data1c_ID[,-c(1,3)] # treu "Group.1" (variable creada per la funció prèvia) i Time
+colnames(data1c_ID)<-c("ID","TotalID", "NightID", "SpeedID", "UrbanID", "DconID", "TrconID", "ageID", "age35ID", "lic_ageID", "lic_age15ID", "parking_yesID", "womanID", "BMzonesID", "power100ID", "age_2ID", "age35_2ID", "lic_age_2ID", "lic_age15_2ID", "parking_yes2ID", "woman_2ID", "BMzones_2ID", "power100_2ID", "age_2_TrconID", "lic_age_2_TrconID", "parking_yes2_TrconID", "woman_2_TrconID", "BMzones_2_TrconID", "power100_2_TrconID")
+data1c_tim <- aggregate(data1c,by = list(data1c$Time),FUN = mean)
+data1c_tim<-data1c_tim[,-c(1,2)]
+colnames(data1c_tim)<-c("Time","Totalt", "Nightt", "Speedt", "Urbant", "Dcont", "Trcont", "aget", "age35t", "lic_aget", "lic_age15t", "parking_yest", "womant", "BMzonest", "power100t", "age_2t", "age35_2t", "lic_age_2t", "lic_age15_2t", "parking_yes2t", "woman_2t", "BMzones_2t", "power100_2t", "age_2_Trcont", "lic_age_2_Trcont", "parking_yes2_Trcont", "woman_2_Trcont", "BMzones_2_Trcont", "power100_2_Trcont")
+data1c_final<-left_join(data1c,data1c_ID,by="ID")
+data1c_final<-left_join(data1c_final,data1c_tim,by="Time")
+
+n <- nrow(data1c)
+data1c_centrades<-data1c_final[,3:30]-data1c_final[,31:58]-data1c_final[,59:86]
+data1c_timID <- t(replicate(n,colMeans(data1c_final[,3:30])))
+data1c_centrades<-data1c_centrades+data1c_timID # Replica les mitjanes en totes les files
+colMeans(data1c_centrades) # Comprovació de que totes les variables tenen mitjana 0
+```
+
+#### Variable Total amb l'efecte de covariables
+
+L'estimador de l'efecte del tractament torna a ser negatiu i significatiu, com pels cassos en que es tractava tots els accidents de forma conjunta i en que només es tenien en consideració els accidents causats pels assegurats. Això indica que haver tingut un accident culpa d'un tercer, dona lloc a reduir el nombre total de quilòmetres. Pel que fa a les variables sense interaccions es nota que a major edat, més quilòmetres es condueixen. Contràriament, tenir pàrquing dona lloc a conduir menys quilòmetres, el qual no s'esperava ja que en general es pot dir que si tens pàrquing, tens més diners i per tant et pots permetre la gasolina per a realitzar més quilòmetres.
+
+Pel que fa a les interaccions amb `Trcon`, 3 d'elles s'han trobat en el model, i les 3 han acabat mostrant un $ATT_2$ significatiu i negatiu. Amb l'ajuda de les gràfiques podem notar que ser dona i tenir un accident causat per tercers dona lloc a reduir el nombre de quilòmetres totals, mentre això no succeix si s'és home, indicant que les dones agafen por a la conducció enfront de qualsevol accident. La explicació seria la mateixa pel cas dels cotxes petits i grans, on en aquest cas són els usuaris que condueixen cotxes petits els més indiferents als accidents. Pel que fa a l'edat, hi ha una gràfica molt significativa, la del rang de 39 a 44 anys. Aquesta mostra clarament que els usuaris que han tingut un accident causat per tercers passen a conduir més quilòmetres totals que els que no han tingut cap accident, mentre anteriorment no era així. Es podria dir que als usuaris que els afecta més patir un accident, en referència en que han deixat de conduir tant, són els més joves. 
+
+```{r}
+mod3_tot_lm <- lm(Total ~ Trcon + age_2 + lic_age_2 + parking_yes2 + woman_2 + BMzones_2 + power100_2 + age_2_Trcon + lic_age_2_Trcon + parking_yes2_Trcon + woman_2_Trcon + BMzones_2_Trcon + power100_2_Trcon -1, data = data1c_centrades)
+
+R2<-(var(predict(mod3_tot_lm) + data1c_ID$TotalID + data1c_tim$Totalt - data1c_timID[,1]))/var(data1c$Total) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod3_tot_lm))-1))
+res<-cbind(summary(mod3_tot_lm)$coefficients,R2,R2Adj, AIC = AIC(mod3_tot_lm))
+knitr::kable(res,digits=4, caption="TWFE for Total variable with cst covariates")
+
+mod3_tot_lm_red <- stepAIC(mod3_tot_lm, trace = FALSE)
+R2<-(var(predict(mod3_tot_lm_red) + data1c_ID$TotalID + data1c_tim$Totalt - data1c_timID[,1]))/var(data1c$Total) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod3_tot_lm_red))-1))
+res<-cbind(summary(mod3_tot_lm_red)$coefficients,R2,R2Adj, AIC = AIC(mod3_tot_lm_red))
+knitr::kable(res,digits=4, caption="TWFE for Total variable with cst reduced covariates")
+
+# age:
+res_1 <- signif(mod3_tot_lm_red, c(1,1,0,0,0,1,0,0))
+# Woman:
+res_2 <- signif(mod3_tot_lm_red, c(1,0,0,1,0,0,1,0))
+#power100
+res_3 <- signif(mod3_tot_lm_red, c(1,0,0,0,0,0,0,1))
+
+res_effects<-cbind(res_1, res_2, res_3)
+colnames(res_effects)<-c("age","woman", "power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+
+```{r, out.width="70%", fig.align = 'center'}
+# age
+data1c$age_cat <- findInterval(data1c$age, c(29, 34, 39, 44, 49))
+data1c$age_cat <- factor(data1c$age_cat)
+levels(data1c$age_cat) <- c("29-34", "34-39", "39-44", "44-49")
+Means<-aggregate(Total~Time+Dcon+age_cat,data=data1c,mean)
+Means<-as.data.frame(Means)
+
+Means$Dcon=as.factor(Means$Dcon)
+Means$time=as.factor(Means$Time)
+p1<-ggplot(data=Means[Means$age_cat == "29-34",], aes(x=Time, y=Total, group=Dcon)) +
+  geom_line(aes(linetype=Dcon),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "Total yearly km", x = "Time", title = "Edat: 29-34")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+p2<-ggplot(data=Means[Means$age_cat == "34-39",], aes(x=Time, y=Total, group=Dcon)) +
+  geom_line(aes(linetype=Dcon),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "Total yearly km", x = "Time", title = "Edat: 34-39")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+p3<-ggplot(data=Means[Means$age_cat == "39-44",], aes(x=Time, y=Total, group=Dcon)) +
+  geom_line(aes(linetype=Dcon),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "Total yearly km", x = "Time", title = "Edat: 39-44")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+p4<-ggplot(data=Means[Means$age_cat == "44-49",], aes(x=Time, y=Total, group=Dcon)) +
+  geom_line(aes(linetype=Dcon),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "Total yearly km", x = "Time", title = "Edat: 44-49")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+
+# woman
+Means<-aggregate(Total~Time+Dcon+woman,data=data1c,mean)
+Means<-as.data.frame(Means)
+
+Means$Dcon=as.factor(Means$Dcon)
+Means$time=as.factor(Means$Time)
+p5<-ggplot(data=Means[Means$woman == 0,], aes(x=Time, y=Total, group=Dcon)) +
+  geom_line(aes(linetype=Dcon),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "Total yearly km", x = "Time", title = "Homes")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+p6<-ggplot(data=Means[Means$woman == 1,], aes(x=Time, y=Total, group=Dcon)) +
+  geom_line(aes(linetype=Dcon),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "Total yearly km", x = "Time", title = "Dones")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+
+# power100
+Means<-aggregate(Total~Time+Dcon+power100,data=data1c,mean)
+Means<-as.data.frame(Means)
+
+Means$Dcon=as.factor(Means$Dcon)
+Means$time=as.factor(Means$Time)
+p7<-ggplot(data=Means[Means$power100 == 0,], aes(x=Time, y=Total, group=Dcon)) +
+  geom_line(aes(linetype=Dcon),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "Total yearly km", x = "Time", title = "Potència>100")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+p8<-ggplot(data=Means[Means$power100 == 1,], aes(x=Time, y=Total, group=Dcon)) +
+  geom_line(aes(linetype=Dcon),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "Total yearly km", x = "Time", title = "Potència<=100")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+
+# Grafiquem
+grid.arrange(p1,p2,p3, p4,ncol = 2)
+grid.arrange(p5, p6,p7, p8, ncol = 2)
+```
+
+
+Si eliminèssim els anys de carnet donaria lloc al mateix model que el creat anteriorment. Així doncs, a continuació només es mostren els resultats després de l'eliminació de l'edat. Al comparar-los es pot notar que mantenir l'edat donava lloc a un efecte del tractament significatiu tant pel model com per les 3 interaccions trobades en el model: `age`, `woman` i `power100`. D'altra banda, el model que únicament conté els anys de llicència dona lloc a un $ATT_2$ no significatiu i només la variable `woman` mostra una interacció´significativa. Tenint en compte que a més a més l'ajust és millor pel model creat anteriorment, es conclou que l'edat és millor per a analitzar la variable dependent `Total` sota aquestes condicions. 
+
+```{r}
+# Només lic_age
+mod3_tot_lm_lic <- lm(Total ~ Trcon + lic_age_2 + parking_yes2 + woman_2 + BMzones_2 + power100_2 + lic_age_2_Trcon + parking_yes2_Trcon + woman_2_Trcon + BMzones_2_Trcon + power100_2_Trcon -1, data = data1c_centrades)
+
+mod3_tot_lm_lic_red <- stepAIC(mod3_tot_lm_lic, trace = FALSE)
+
+R2<-(var(predict(mod3_tot_lm_lic_red) + data1c_ID$TotalID + data1c_tim$Totalt - data1c_timID[,1]))/var(data1c$Total) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod3_tot_lm_lic_red))-1))
+res<-cbind(summary(mod3_tot_lm_lic_red)$coefficients,R2,R2Adj, AIC = AIC(mod3_tot_lm_lic_red))
+knitr::kable(res,digits=4, caption="TWFE for Total variable with cst reduced covariates without age")
+
+# lic_age
+res_1 <- signif(mod3_tot_lm_lic_red, as.vector(c(1,1,0,0,0,1,0,0)))
+# woman_2_Tr
+res_2 <- signif(mod3_tot_lm_lic_red, as.vector(c(1,0,0,1,0,0,1,0)))
+# power100
+res_3 <- signif(mod3_tot_lm_lic_red, as.vector(c(1,0,0,0,0,0,0,1)))
+
+res_effects<-cbind(res_1, res_2, res_3)
+colnames(res_effects)<-c("lic_age","woman", "power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+
+#### Variable Night amb l'efecte de covariables
+
+Altre cop l'efecte de tractament ha sortit negatiu i significatiu. No obstant això, el coeficient és menor en valor absolut que el que s'obtenia per al conjunt que únicament tenia en compte els accidents causats per un mateix. Això indica que encara que tenir un accident causat per tercers dona lloc a reduir el percentatge de quilòmetres recorreguts durant la nit, aquesta reducció és menor que si l'accident és causat per un mateix, com s'esperava obtenir. Pel que fa a les variables sense interaccions es nota com ser gran dona lloc a augmentar el percentatge de conducció nocturna, mentre tenir pocs anys de carnet a disminuir-la, com esperat. El fet de ser dona i de viure a Barcelona o Madrid també augmenten el percentatge, mentre disposar d'un cotxe petit el disminueix. 
+
+Pel que fa a les interaccions, tres d'elles han sortit com a rellevants en el model (`lic_age`, `parking_yes` i `power100`), les quals han acabat desembocant en un $ATT_2$ significatiu i negatiu. Amb els gràfics es pot notar que disposar de pàrquing i patir un accident causat per tercers dona lloc a disminuir el percentatge de conducció nocturna, mentre si no es té pàrquing aquesta s'augmenta. Aquesta relació es pot explicar fàcilment ja que els usuaris que no tenen pàrquing durant la nit han de deixar el cotxe al carrer, augmentat la possibilitat de danys no controlats sobre aquest. Altrament, si l'estan conduint durant de nit, ningu els xocarà a l'aparcar, per exemple. Pel que fa a la potència, sembla ser que disposar d'un cotxe gran i haver tingut un accident durant la nit és la única combinació que dona lloc a reduir el percentatge de quilòmetres nocturns. Finalment, pel que fa als anys de conducció es nota clarament que els usuaris amb poca experiència agafen por a la conducció nocturna després d'haver patit un accident, encara que aquest hagi estat causat per tercers, mentre els usuaris amb més de 23 anys d'experiència no els afecta en absolut xocs causats per tercers. 
+
+```{r}
+mod3_nig_lm <- lm(Night ~ Trcon + age_2 + lic_age_2 + parking_yes2 + woman_2 + BMzones_2 + power100_2 + age_2_Trcon + lic_age_2_Trcon + parking_yes2_Trcon + woman_2_Trcon + BMzones_2_Trcon + power100_2_Trcon -1, data = data1c_centrades)
+
+R2<-(var(predict(mod3_nig_lm) + data1c_ID$NightID + data1c_tim$Nightt - data1c_timID[,2]))/var(data1c$Night) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod3_nig_lm))-1))
+res<-cbind(summary(mod3_nig_lm)$coefficients,R2,R2Adj, AIC = AIC(mod3_nig_lm))
+knitr::kable(res,digits=4, caption="TWFE for Night variable with cst covariates")
+
+mod3_nig_lm_red <- stepAIC(mod3_nig_lm, trace = FALSE,
+                           scope = list(lower = formula("Night ~ Trcon"),
+                                 upper = formula(mod3_nig_lm)))
+R2<-(var(predict(mod3_nig_lm_red) + data1c_ID$NightID + data1c_tim$Nightt - data1c_timID[,2]))/var(data1c$Night) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod3_nig_lm_red))-1))
+res<-cbind(summary(mod3_nig_lm_red)$coefficients,R2,R2Adj, AIC = AIC(mod3_nig_lm_red))
+knitr::kable(res,digits=4, caption="TWFE for Night variable with cst reduced covariates")
+
+# lic_age
+res_1 <- signif(mod3_nig_lm_red, c(1,0,1,0,0,0,0,1,0,0))
+#parking_yes
+res_2 <- signif(mod3_nig_lm_red, c(1,0,0,1,0,0,0,0,1,0))
+# power100:
+res_3 <- signif(mod3_nig_lm_red, c(1,0,0,0,0,0,1,0,0,1))
+
+res_effects<-cbind(res_1, res_2, res_3)
+colnames(res_effects)<-c("lic_age","parking_yes", "power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+```{r, out.width="70%", fig.align = 'center'}
+# lic_age
+data1c$lic_age_cat <- findInterval(data1c$lic_age, c(11, 15, 19, 23, 43))
+data1c$lic_age_cat <- factor(data1c$lic_age_cat)
+levels(data1c$lic_age_cat) <- c("11-15", "15-19", "19-23", "23-43")
+Means<-aggregate(Night~Time+Dcon+lic_age_cat,data=data1c,mean)
+Means<-as.data.frame(Means)
+
+Means$Dcon=as.factor(Means$Dcon)
+Means$time=as.factor(Means$Time)
+p1<-ggplot(data=Means[Means$lic_age_cat == "11-15",], aes(x=Time, y=Night, group=Dcon)) +
+  geom_line(aes(linetype=Dcon),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% night km", x = "Time", title = "Lic age: 11-15")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+p2<-ggplot(data=Means[Means$lic_age_cat == "15-19",], aes(x=Time, y=Night, group=Dcon)) +
+  geom_line(aes(linetype=Dcon),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% night km", x = "Time", title = "Lic age: 15-19")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+p3<-ggplot(data=Means[Means$lic_age_cat == "19-23",], aes(x=Time, y=Night, group=Dcon)) +
+  geom_line(aes(linetype=Dcon),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% night km", x = "Time", title = "Lic age: 19-23")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+p4<-ggplot(data=Means[Means$lic_age_cat == "23-43",], aes(x=Time, y=Night, group=Dcon)) +
+  geom_line(aes(linetype=Dcon),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% night km", x = "Time", title = "Lic age: 23-43")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+
+# parking_yes
+Means<-aggregate(Night~Time+Dcon+parking_yes,data=data1c,mean)
+Means<-as.data.frame(Means)
+
+Means$Dcon=as.factor(Means$Dcon)
+Means$time=as.factor(Means$Time)
+p5<-ggplot(data=Means[Means$parking_yes == 0,], aes(x=Time, y=Night, group=Dcon)) +
+  geom_line(aes(linetype=Dcon),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% night km", x = "Time", title = "No pàrquing")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+p6<-ggplot(data=Means[Means$parking_yes == 1,], aes(x=Time, y=Night, group=Dcon)) +
+  geom_line(aes(linetype=Dcon),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% night km", x = "Time", title = "Pàrquing")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+
+# power100
+Means<-aggregate(Night~Time+Dcon+power100,data=data1c,mean)
+Means<-as.data.frame(Means)
+
+Means$Dcon=as.factor(Means$Dcon)
+Means$time=as.factor(Means$Time)
+p7<-ggplot(data=Means[Means$power100 == 0,], aes(x=Time, y=Night, group=Dcon)) +
+  geom_line(aes(linetype=Dcon),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% night km", x = "Time", title = "Potència>100")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+p8<-ggplot(data=Means[Means$power100 == 1,], aes(x=Time, y=Night, group=Dcon)) +
+  geom_line(aes(linetype=Dcon),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% night km", x = "Time", title = "Potència<=100")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+
+grid.arrange(p1, p2, p3, p4,ncol = 2)
+grid.arrange(p5, p6, p7, p8,ncol = 2)
+```
+
+A continuació, com que la variable `parking_yes` ha donat lloc a una interacció significativa, s'analitzarà què hagués passat si aquesta no s'hagués trobat en el model. Els resultats ensenyen un model amb un efecte de tractament altre cop significatiu i negatiu amb una magnitud similar. A més a més, els efectes de tractament de les interaccions analitzades continuen sent significatives, com anteriorment. Com que els resultats no canvien de forma significativa es conclou que eliminar la variable del model no és necessari per a desbelar nova informació. 
+
+
+```{r}
+mod3_nig_lm_par <- lm(Night ~  Trcon + age_2 + lic_age_2 + woman_2 + BMzones_2 + power100_2 + lic_age_2_Trcon +     power100_2_Trcon - 1, data = data1c_centrades)
+
+R2<-(var(predict(mod3_nig_lm_par) + data1c_ID$NightID + data1c_tim$Nightt - data1c_timID[,2]))/var(data1c$Night) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod3_nig_lm_par))-1))
+res<-cbind(summary(mod3_nig_lm_par)$coefficients,R2,R2Adj, AIC = AIC(mod3_nig_lm_par))
+knitr::kable(res,digits=4, caption="TWFE for Night variable with cst covariates")
+
+
+# lic_age
+res_1 <- signif(mod3_nig_lm_par, c(1,0,1,0,0,0,1,0))
+# power100:
+res_3 <- signif(mod3_nig_lm_par, c(1,0,0,0,0,1,0,1))
+
+res_effects<-cbind(res_1, res_3)
+colnames(res_effects)<-c("lic_age", "power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+
+En aquest cas els models que distingeixen entre edat i anys de carnet són molt similars entre ells. Tots dos donen lloc a un efecte de tractament amb mateix signe, magnitud i significació, així com a les mateixes interaccions rellevants. Així doncs, ens basem únicament en l'ajust dels models per concloure que l'edat és millor per a tractar amb la variable dependent `Night`, que és la mateixa conclusió que s'ha trobat al llarg de tot el treball. 
+
+```{r}
+mod3_tot_lm_lic <- lm(Night ~ Trcon + lic_age_2 + parking_yes2 + woman_2 + BMzones_2 + power100_2 + lic_age_2_Trcon + parking_yes2_Trcon + woman_2_Trcon+ BMzones_2_Trcon + power100_2_Trcon -1, data = data1c_centrades)
+
+mod3_tot_lm_lic_red <- stepAIC(mod3_tot_lm_lic, trace = FALSE,
+                           scope = list(lower = formula("Night ~ Trcon"),
+                                 upper = formula(mod3_tot_lm_lic)))
+
+R2<-(var(predict(mod3_tot_lm_lic_red) + data1c_ID$NightID + data1c_tim$Nightt - data1c_timID[,2]))/var(data1c$Night) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod3_tot_lm_lic_red))-1))
+res<-cbind(summary(mod3_tot_lm_lic_red)$coefficients,R2,R2Adj, AIC = AIC(mod3_tot_lm_lic_red))
+knitr::kable(res,digits=4, caption="TWFE for Night variable with cst reduced covariates without age")
+
+# lic_age
+res_1 <- signif(mod3_tot_lm_lic_red, c(1,1,0,0,0,0,1,0,0))
+# parking_yes
+res_2 <- signif(mod3_tot_lm_lic_red, c(1,0,1,0,0,0,0,1,0))
+# power100
+res_3 <- signif(mod3_tot_lm_lic_red, c(1,0,0,0,0,1,0,0,1))
+
+res_effects<-cbind(res_1, res_2, res_3)
+colnames(res_effects)<-c("lic_age", "parking_yes", "power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+
+```{r}
+mod3_tot_lm_age <- lm(Night ~ Trcon  + age_2 + parking_yes2 + woman_2 + BMzones_2 + power100_2 + age_2_Trcon + parking_yes2_Trcon + woman_2_Trcon + BMzones_2_Trcon + power100_2_Trcon -1, data = data1c_centrades)
+
+mod3_tot_lm_age_red <- stepAIC(mod3_tot_lm_age, trace = FALSE,
+                           scope = list(lower = formula("Night ~ Trcon"),
+                                 upper = formula(mod3_tot_lm_age)))
+
+R2<-(var(predict(mod3_tot_lm_age_red) + data1c_ID$NightID + data1c_tim$Nightt - data1c_timID[,2]))/var(data1c$Night) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod3_tot_lm_age_red))-1))
+res<-cbind(summary(mod3_tot_lm_age_red)$coefficients,R2,R2Adj, AIC = AIC(mod3_tot_lm_age_red))
+knitr::kable(res,digits=4, caption="TWFE for Night variable with cst reduced covariates without lic_age")
+
+#age
+res_1 <- signif(mod3_tot_lm_age_red, c(1,1,0,0,0,1,0,0))
+# parking_yes
+res_2 <- signif(mod3_tot_lm_age_red, c(1,0,0,0,0,0,1,0))
+#power100
+res_3 <- signif(mod3_tot_lm_age_red, c(1,0,0,0,1,0,0,1))
+
+res_effects<-cbind(res_1, res_2, res_3)
+colnames(res_effects)<-c("age","parking_yes", "power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+
+#### Variable Speed amb l'efecte de covariables
+
+S'ha trobat un efecte del tractament significatiu i negatiu, el qual té molt més sentit a nivell esperat que el signe positiu que es trobava pels usuaris que tenien accidents causats per un mateix. Així mateix, només s'ha trobat una interacció rellevant: `power100` amb `Tr`. Aquesta és significativa i positiva. Les gràfiques mostren que conduir un cotxe gran i tenir un accident causat per tercers dona lloc a reduir la velocitat de forma considerable respecte a aquells que també tenen cotxe gran però no han patit cap accident. Tanmateix, el signe positiu s'observa degut a que pel cas dels cotxes petits els usuaris que han tingu un accident causat per tercers pràcticament no decreixen la seva velocitat. No obstant això, aquest fet és degut a que ha conduien lentament abans de l'accident. De fet, condueixen molt més lentament que els que també tenen cotxes petits però no han patit cap accident causat per tercers. Això dona lloc a pensar que possiblement és aquesta lentitud al volant la que ha doant lloc als accidents. 
+ 
+Es nota també que els usuaris joves i amb menys anys de carnet condueixen a una velocitat menor, mentre viure a Barcelona o Madrid i tenir un cotxe de baixa potència dona lloc a saltar-se més els límits de velocitat, extranyament pel que fa a la segona variable mencionada. 
+
+
+```{r}
+mod3_spe_lm <- lm(Speed ~ Trcon + age_2 + lic_age_2 + parking_yes2 + woman_2 + BMzones_2 + power100_2 + age_2_Trcon + lic_age_2_Trcon+ parking_yes2_Trcon + woman_2_Trcon + BMzones_2_Trcon + power100_2_Trcon -1, data = data1c_centrades)
+
+R2<-(var(predict(mod3_spe_lm) + data1c_ID$SpeedID + data1c_tim$Speedt - data1c_timID[,3]))/var(data1c$Speed) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod3_spe_lm))-1))
+res<-cbind(summary(mod3_spe_lm)$coefficients,R2,R2Adj, AIC = AIC(mod3_spe_lm))
+knitr::kable(res,digits=4, caption="TWFE for Speed variable with cst covariates")
+
+mod3_spe_lm_red <- stepAIC(mod3_spe_lm, trace = FALSE,
+                           scope = list(lower = formula("Speed ~ Trcon"),
+                                 upper = formula(mod3_spe_lm)))
+R2<-(var(predict(mod3_spe_lm_red) + data1c_ID$SpeedID + data1c_tim$Speedt - data1c_timID[,3]))/var(data1c$Speed) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod3_spe_lm_red))-1))
+res<-cbind(summary(mod3_spe_lm_red)$coefficients,R2,R2Adj, AIC = AIC(mod3_spe_lm_red))
+knitr::kable(res,digits=4, caption="TWFE for Speed variable with cst reduced covariates")
+
+# power100:
+res_1 <- signif(mod3_spe_lm_red,c(1,0,0,0,1,1))
+
+res_effects<-cbind(res_1)
+colnames(res_effects)<-c("power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+
+```{r, out.width="70%", fig.align = 'center'}
+# power100
+Means<-aggregate(Speed~Time+Dcon+power100,data=data1c,mean)
+Means<-as.data.frame(Means)
+
+Means$Dcon=as.factor(Means$Dcon)
+Means$time=as.factor(Means$Time)
+p1<-ggplot(data=Means[Means$power100 == 0,], aes(x=Time, y=Speed, group=Dcon)) +
+  geom_line(aes(linetype=Dcon),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% over-speed limits", x = "Time", title = "Potència>100")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+p2<-ggplot(data=Means[Means$power100 == 1,], aes(x=Time, y=Speed, group=Dcon)) +
+  geom_line(aes(linetype=Dcon),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% over-speed limits", x = "Time", title = "Potència<=100")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+
+grid.arrange(p1, p2,ncol = 2)
+```
+
+Pel que fa a les interaccions el resultat és el mateix, independentment de la variable que es mantingui en el model. Així mateix, l'efecte de tractament també dona lloc a un signe, magnitud i significació similar, tot i que la significació del model que únicament conté els anys de carnet es troba lleugerament per sobre del 0.05. Tenint en compte que l'ajust és millor pel model que considera els anys de llicència, es conclou doncs que aquesta és millor per analitzar i explicar la variable resposta `Speed`.
+
+```{r}
+# Age
+mod3_spe_lm_age <- lm(Speed ~ Trcon + age_2 + parking_yes2 + woman_2 + BMzones_2 + power100_2 + age_2_Trcon + parking_yes2_Trcon+ woman_2_Trcon+ BMzones_2_Trcon + power100_2_Trcon -1, data = data1c_centrades)
+
+mod3_spe_lm_age_red <- stepAIC(mod3_spe_lm_age, trace = FALSE, 
+                               scope = list(lower = formula("Speed ~ Trcon"),
+                                 upper = formula(mod3_spe_lm_age)))
+R2<-(var(predict(mod3_spe_lm_age_red) + data1c_ID$SpeedID + data1c_tim$Speedt - data1c_timID[,3]))/var(data1c$Speed) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod3_spe_lm_age_red))-1))
+res<-cbind(summary(mod3_spe_lm_age_red)$coefficients,R2,R2Adj, AIC = AIC(mod3_spe_lm_age_red))
+knitr::kable(res,digits=4, caption="TWFE for Speed variable with cst reduced covariates without lic_age")
+
+# power100:
+res_1 <- signif(mod3_spe_lm_age_red,c(1,0,0,1,1))
+
+res_effects<-cbind(res_1)
+colnames(res_effects)<-c("power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+```{r}
+# Lic_age15
+mod3_spe_lm_lic <- lm(Speed ~ Trcon + lic_age_2 + parking_yes2 + woman_2 + BMzones_2 + power100_2 + lic_age_2_Trcon + parking_yes2_Trcon + woman_2_Trcon + BMzones_2_Trcon + power100_2_Trcon -1, data = data1c_centrades)
+
+mod3_spe_lm_lic_red <- stepAIC(mod3_spe_lm_lic, trace = FALSE, 
+                               scope = list(lower = formula("Speed ~ Trcon"),
+                                 upper = formula(mod3_spe_lm_lic)))
+R2<-(var(predict(mod3_spe_lm_lic_red) + data1c_ID$SpeedID + data1c_tim$Speedt - data1c_timID[,3]))/var(data1c$Speed) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod3_spe_lm_lic_red))-1))
+res<-cbind(summary(mod3_spe_lm_lic_red)$coefficients,R2,R2Adj, AIC = AIC(mod3_spe_lm_lic_red))
+knitr::kable(res,digits=4, caption="TWFE for Speed variable with cst reduced covariates without age")
+
+# power100
+res_1 <- signif(mod3_spe_lm_lic_red, as.vector(c(1,0,0,0,1,1)))
+
+res_effects<-cbind(res_1)
+colnames(res_effects)<-c("power100")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+
+
+#### Variable Urban amb l'efecte de covariables
+
+Altre cop des que s'ha decidit considerar variables constants en el temps es nota que l'efecte de tractament és significatiu i negatiu. Això dona lloc a entendre que els usuaris que han tingut un accident causat per tercers passen a recòrrer un percentatge menor dels quilòmetres per vies urbanes, el qual és molt comprensible perquè de fet gran part d'aquests accidents són causats en aquests tipus de vies. També es nota com disposar de pocs anys de carnet dona lloc a augmentar aquest percentatge, el qual també es explicable en tenir en un inici menys soltura al volant i voler anar per carreteres més lentes on ens podem fer menys mal. D'altra banda, viure a Barcelona o Madrid  i tenir un cotxe amb baixa potència dona lloc a disminuir aquest percentatge.
+
+La única interacció que ha sortit en el model fa referència a la varible `woman`, la qual ha acabat sent significativa i positiva. Amb la gràfica es nota que les dones que han tingut un accident causat per tercers són les úniques que durant el període de post-tractament realitzen un percentatge major dels quilòmetres per vies urbanes dels que es realitzaven a t=1. Això es pot explicar perquè possiblement aquestes agafen por a les vies més ràpides on els accidents poden implicar més danys. 
+
+```{r}
+mod3_urb_lm <- lm(Urban ~ Trcon + age_2 + lic_age_2 + parking_yes2 + woman_2 + BMzones_2 + power100_2 + age_2_Trcon + lic_age_2_Trcon + parking_yes2_Trcon + woman_2_Trcon + BMzones_2_Trcon + power100_2_Trcon -1, data = data1c_centrades)
+
+R2<-(var(predict(mod3_urb_lm) + data1c_ID$UrbanID + data1c_tim$Urbant - data1c_timID[,4]))/var(data1c$Urban) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod3_urb_lm))-1))
+res<-cbind(summary(mod3_urb_lm)$coefficients,R2,R2Adj, AIC = AIC(mod3_urb_lm))
+knitr::kable(res,digits=4, caption="TWFE for Urban variable with cst covariates")
+
+mod3_urb_lm_red <- stepAIC(mod3_urb_lm, trace = FALSE,
+                           scope = list(lower = formula("Urban ~ Trcon"),
+                                 upper = formula(mod3_urb_lm)))
+R2<-(var(predict(mod3_urb_lm_red) + data1c_ID$UrbanID + data1c_tim$Urbant - data1c_timID[,4]))/var(data1c$Urban) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod3_urb_lm_red))-1))
+res<-cbind(summary(mod3_urb_lm_red)$coefficients,R2,R2Adj, AIC = AIC(mod3_urb_lm_red))
+knitr::kable(res,digits=4, caption="TWFE for Urban variable with cst reduced covariates")
+
+# woman: 
+res_1<- signif(mod3_urb_lm_red,c(1,0,0,0,1)) 
+
+res_effects<-cbind(res_1)
+colnames(res_effects)<-c("woman")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+```{r, out.width="70%", fig.align = 'center'}
+# woman
+Means<-aggregate(Urban~Time+Dcon+woman,data=data1c,mean)
+Means<-as.data.frame(Means)
+
+Means$Dcon=as.factor(Means$Dcon)
+Means$time=as.factor(Means$Time)
+p1<-ggplot(data=Means[Means$woman == 0,], aes(x=Time, y=Urban, group=Dcon)) +
+  geom_line(aes(linetype=Dcon),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% urban km", x = "Time", title = "Homes")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+p2<-ggplot(data=Means[Means$woman == 1,], aes(x=Time, y=Urban, group=Dcon)) +
+  geom_line(aes(linetype=Dcon),linewidth=1.2)+
+  geom_point(size=3)+theme(legend.position="top",legend.justification="right")+labs(y = "% urban km", x = "Time", title = "Dones")+
+  scale_x_discrete(breaks = c(1, 2), labels = c("Pre-treatment", "Post-treatment"))
+# Grafiquem
+grid.arrange(p1, p2, ncol=2)
+```
+
+Els resultats són pràcticament idèntics per als dos models creats a continuació. Exactament les mateixes variables apareixen en tots dos cassos, a excepció d'`age` i `lic_age` que tot i així acaben tenint un signe, significació i magnitud semblants. A més a més, els resultats de la interacció també són pràcticament idèntics, així com l'efecte de tractament i la seva significació i l'ajust. Es conclou doncs que totes dues variables, tant l'edat com els anys de carnet d'un assegurat poden ajudar a predir igual de bé el percentatge de quilòmetres que es  duen a terme per vies urbanes així com a saber com reaccionen aquests enfront un accident. 
+
+```{r}
+# Age
+mod3_urb_lm_age <- lm(Urban ~ Trcon + age_2 + parking_yes2 + woman_2 + BMzones_2 + power100_2 + age_2_Trcon + parking_yes2_Trcon + woman_2_Trcon + BMzones_2_Trcon + power100_2_Trcon -1, data = data1c_centrades)
+
+mod3_urb_lm_age_red <- stepAIC(mod3_urb_lm_age, trace = FALSE, 
+                               scope = list(lower = formula("Urban ~ Trcon"),
+                                 upper = formula(mod3_urb_lm_age)))
+R2<-(var(predict(mod3_urb_lm_age_red) + data1c_ID$UrbanID + data1c_tim$Urbant - data1c_timID[,4]))/var(data1c$Urban) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod3_urb_lm_age_red))-1))
+res<-cbind(summary(mod3_urb_lm_age_red)$coefficients,R2,R2Adj, AIC = AIC(mod3_urb_lm_age_red))
+knitr::kable(res,digits=4, caption="TWFE for Urban variable with cst reduced covariates without lic_age")
+
+# woman
+res_1 <- signif(mod3_urb_lm_age_red, as.vector(c(1,0,0,0,1)))
+
+res_effects<-cbind(res_1)
+colnames(res_effects)<-c("woman")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+
+```{r}
+# lic age
+mod3_urb_lm_lic <- lm(Urban ~ Trcon + lic_age_2 + parking_yes2 + woman_2 + BMzones_2 + power100_2 + lic_age_2_Trcon + parking_yes2_Trcon + woman_2_Trcon + BMzones_2_Trcon + power100_2_Trcon-1, data = data1c_centrades)
+
+mod3_urb_lm_lic_red <- stepAIC(mod3_urb_lm_lic, trace = FALSE, 
+                               scope = list(lower = formula("Urban ~ Trcon"),
+                                 upper = formula(mod3_urb_lm_lic)))
+R2<-(var(predict(mod3_urb_lm_lic_red) + data1c_ID$UrbanID + data1c_tim$Urbant - data1c_timID[,4]))/var(data1c$Urban) 
+R2Adj<- 1 - (((1-R2)*(n-1))/((n/2)-length(coef(mod3_urb_lm_lic_red))-1))
+res<-cbind(summary(mod3_urb_lm_lic_red)$coefficients,R2,R2Adj, AIC = AIC(mod3_urb_lm_lic_red))
+knitr::kable(res,digits=4, caption="TWFE for Urban variable with cst reduced covariates without lic_age")
+
+# woman
+res_1 <- signif(mod3_urb_lm_lic_red, as.vector(c(1,0,0,0,1)))
+
+res_effects<-cbind(res_1)
+colnames(res_effects)<-c("woman")
+knitr::kable(res_effects,digits=4, caption="Some effects")
+```
+
+
