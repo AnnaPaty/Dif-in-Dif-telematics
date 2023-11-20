@@ -442,11 +442,11 @@ Tanmateix, en realitat se sap que el fet de tenir un accident no és completamen
 
 Aquest mètode és una generalització del Dif-in-Dif anomenat Changes-in-Changes. Com a fets rellevants, assumeix que les característiques no són observables, però que dins de cada grup (control i tractament), la distribució d'aquestes característiques no canvia al llarg del temps. És per aquest raó, que tot i no treballar amb covariables en aquest model, s'ha treballat amb el conjunt de dades reduit, el que mostra les covariables constants al llarg del temps. 
 
-Com a exercici extra en comparació als altres mètodes, s'ha decidit calcular també els quartils. L'error estàndard d'aquests s'ha calculat a partir de la tècnica bootstrap i la inferència només s'ha fet a 1 cua. Aquests permeten veure si realment hi ha diferències entre aquells individus que s'exposen molt al risc, és a dir, que per exemple es troben molta part del temps conduint per sobre la velocitat permesa. 
+Com a exercici extra en comparació als altres mètodes, s'ha decidit calcular també els quartils. Per saber si aquests són estadísticament significatius s'ha calculat l'interval de confiança. Si conté el 0 no és estadísticament significatiu. 
 
-Els resultats mostren clarament que cap de les variables dependents dona lloc a un pvalor significatiu, raó per la qual no es pot dir res sobre aquests estimadors. Aquests resultats no sorprenen en haver detectat al llarg de tot el projecte que els estimadors no paramètrics o semi-paramètrics no són una bona opció per a aplicar a aquestes dades. Concretament, el problema està en que aquestes són massa desbalancejades, és a dir, existeixen molts més usuaris a la base de dades que no han tingut cap accident, que usuaris amb accidents, dificultant molt que models d'aquest tipologia puguin distinguir correctament. 
+Els resultats mostren clarament que només la variable dependent `Total` mostra un coeficient similar al mostrar al mètode anterior i significatiu. Aquests resultats no sorprenen ja que el cap i a la fi aquest mètode està realitzant un procediment similar al TWFE: una metodologia no paramètrica amb una inferència basada en la distribució normal. 
 
-Pel que fa als quartils aquests altre cop han donat lloc a coeficients no significatius. Tanmateix, sí que es nota que a mesura que augmentem el quartil, augmenta el valor del coeficient en valor absolut en la majoria dels cassos. Això equival a dir que el número de quilòmetres (pel cas de la variable `Total`), augmenta pels usuaris que no han declarat cap accident durant el segon període, que és el resultat que s'esperia pensant en sentit comú, ja que són els usuaris que han tingut un accident els que agafen por a la conducció, no al contràri. Està dient doncs que els promitjos no donen informació rellevant perquè els efectes es contraresten, però que mirant els quartils es pot notar la direcció de creixement o decreixement de les variables dependents en funció del grup. 
+Pel que fa als quartils es nota que a mesura que augmentem el quartil, augmenta el valor del coeficient en valor absolut en la majoria dels cassos, tanmateix, els resultats només són estadísticament significatius per a la variable `Total`, excepte per al quartil 0.99 en ser aquest massa extrem. Això equival a dir que el número de quilòmetres (pel cas de la variable `Total`), augmenta pels usuaris que no han declarat cap accident durant el segon període, que és el resultat que s'esperia pensant en sentit comú, ja que són els usuaris que han tingut un accident els que agafen por a la conducció, no al contràri. Està dient doncs que els promitjos no donen informació rellevant perquè els efectes es contraresten, però que mirant els quartils es pot notar la direcció de creixement o decreixement de les variables dependents en funció del grup. 
 
 ```{r}
 # Funció que es queda amb els valors únics de x i els ordena de petit a gran
@@ -655,187 +655,194 @@ nonparam <- function(Y00,Y01,Y10,Y11,qq) {
     CI_lower_o <- -Inf  # Negative infinity for less than
     CI_upper_o <- est_con[1] + z_critical_o * se_con
   }
-  
-  # Bootstrap
-  boot = rep(0, length(est_con))
-  Nboot = 100
-  boot_est = matrix(0, Nboot, 1+length(qq))
-  N00=length(Y00)
-  N01=length(Y01)
-  N10=length(Y10)
-  N11=length(Y11)
-  
-  for(i in 1:Nboot) {
-  
-    # Generate random integers u
-    u <- floor(runif(N00) * N00+ 1) 
-    Y00b <- Y00[u]
-    u <- floor(runif(N01) * N01+ 1)
-    Y01b <- Y01[u]
-    u <- floor(runif(N10) * N10+ 1)
-    Y10b <- Y10[u]
-    u <- floor(runif(N11) * N11+ 1) 
-    Y11b <- Y11[u]
-    
-    YSb <- supp(c(Y00b, Y01b, Y10b, Y11b))
-    YS01b <- supp(Y01b)
-    
-    # Calculate f00b, f01b, f10b, f11b
-    f00b <- prob(Y00b, YSb)
-    f01b <- prob(Y01b, YSb)
-    f10b <- prob(Y10b, YSb)
-    f11b <- prob(Y11b, YSb)
-    
-    # Calculate boot_est
-    boot_est[i,1:(1+length(qq))] <- cic_con(f00b, f01b, f10b, f11b, qq, YSb, YS01b)
-  }
-  
-  # eventually bootstrap standard errors are calculated using the percentile method
-  low <- round(Nboot * 0.025)
-  high <- round(Nboot * 0.975)
-  boot_est_sort <- apply(boot_est, 2, sort)
-  se_boot <- (boot_est_sort[high,] - boot_est_sort[low,]) / (2 * 1.96)
 
-  # Inferència estadística amb bootstrap
-  z_stat_boot <- est_con[1] / se_boot[1]
-  # Two-tailed test
-  p_value_boot <- 2 * (1 - pnorm(abs(z_stat_boot)))  
-  z_critical_boot <- qnorm((1 + 0.95) / 2)
-  CI_lower_boot <- est_con[1] - z_critical_boot * se_boot[1]
-  CI_upper_boot <- est_con[1] + z_critical_boot * se_boot[1]
-  # One-tailed test 
-  z_critical_o_boot <- qnorm(1 - (1 - 0.95))
-  if (direction == '>') {
-    p_value_o_boot <- 1 - pnorm(z_stat_boot)  
-    CI_lower_o_boot <- est_con[1] - z_critical_o_boot * se_boot[1]
-    CI_upper_o_boot <- Inf # Positive infinity for greater than
-  } else {
-    p_value_o_boot <- pnorm(z_stat_boot) 
-    CI_lower_o_boot <- -Inf  # Negative infinity for less than
-    CI_upper_o_boot <- est_con[1] + z_critical_o_boot * se_boot[1]
-  }
-  
-  # Inferència estadística dels quartils
-  z_stat_boot_q <- est_con[2:length(est_con)]/ se_boot[2:length(est_con)]
-  # Two-tailed test
-  p_value_boot_q <- 2 * (1 - pnorm(abs(z_stat_boot_q)))  
-  z_critical_boot_q <- qnorm((1 + 0.95) / 2)
-  CI_lower_boot_q <- est_con[2:length(est_con)] - z_critical_boot_q * se_boot[2:length(est_con)]
-  CI_upper_boot_q <- est_con[2:length(est_con)] + z_critical_boot_q * se_boot[2:length(est_con)]
-  # One-tailed test 
-  z_critical_o_boot_q <- qnorm(1 - (1 - 0.95))
-  direction <- ifelse(est_con[2:length(est_con)] >0, ">", "<")
-  direction <- direction[1]
-  if (direction == '>') {
-    p_value_o_boot_q <- 1 - pnorm(z_stat_boot_q)  
-    CI_lower_o_boot_q <- est_con[2:length(est_con)]- z_critical_o_boot_q * se_boot[2:length(est_con)]
-    CI_upper_o_boot_q <- Inf # Positive infinity for greater than
-  } else {
-    p_value_o_boot_q <- pnorm(z_stat_boot_q) 
-    CI_lower_o_boot_q <- -Inf  # Negative infinity for less than
-    CI_upper_o_boot_q <- est_con[2:length(est_con)] + z_critical_o_boot_q * se_boot[2:length(est_con)]
-  }
-  
   return(list(ATT_2 = est_con[1], sd_ATT = se_con, z_stat = z_stat,
               p_value = p_value, CI_lower = CI_lower, CI_upper = CI_upper,
               p_value_o = p_value_o, CI_lower_o = CI_lower_o, CI_upper_o = CI_upper_o, 
-              sd_ATT_boot = se_boot[1], z_stat_boot = z_stat_boot,
-              p_value_boot = p_value_boot, CI_lower_boot = CI_lower_boot, CI_upper_boot = CI_upper_boot,
-              p_value_o_boot = p_value_o_boot, CI_lower_o_boot = CI_lower_o_boot, CI_upper_o_boot = CI_upper_o_boot,
-              quartils = est_con[2:length(est_con)],
-              sd_ATT_boot_q = se_boot[2:length(est_con)], z_stat_boot_q = z_stat_boot_q,
-              p_value_boot_q = p_value_boot_q, CI_lower_boot_q = CI_lower_boot_q, CI_upper_boot_q = CI_upper_boot_q,
-              p_value_o_boot_q = p_value_o_boot_q, CI_lower_o_boot_q = CI_lower_o_boot_q, CI_upper_o_boot_q = CI_upper_o_boot_q))
+              quartils = est_con[2:length(est_con)]))
 }
 ```
 
 #### Variable Total
 
 ```{r}
-Y00 <- data1c[data1c$D == 0 & data1c$Time == 2,"Total"]
+Y00 <- data1c[data1c$D == 0 & data1c$Time == 1,"Total"]
 Y01 <- data1c[data1c$D == 0 & data1c$Time == 2,"Total"]
 Y10 <- data1c[data1c$D == 1 & data1c$Time == 1,"Total"]
-Y11 <- data1c[data1c$D == 1 & data1c$Time == 1,"Total"]
+Y11 <- data1c[data1c$D == 1 & data1c$Time == 2,"Total"]
 qq=c(0.25,0.5,0.75,0.9,0.95,0.99)
 
 res_total <- nonparam(Y00, Y01, Y10, Y11, qq)
 
 # Resultats: 
-res_cic_tot<-cbind(ATT_2 = c(res_total$ATT_2, res_total$ATT_2, res_total$ATT_2, res_total$ATT_2), sd = c(res_total$sd_ATT, res_total$sd_ATT, res_total$sd_ATT_boot, res_total$sd_ATT_boot), z_stat = c(res_total$z_stat, res_total$z_stat, res_total$z_stat_boot, res_total$z_stat_boot), p_value = c(res_total$p_value, res_total$p_value_o, res_total$p_value_boot, res_total$p_value_o_boot), CI_lower = c(res_total$CI_lower, res_total$CI_lower_o,res_total$CI_lower_boot, res_total$CI_lower_o_boot), CI_upper = c(res_total$CI_upper, res_total$CI_upper_o,res_total$CI_upper_boot, res_total$CI_upper_o_boot))
-rownames(res_cic_tot) <- c("2-tails", "1-tail", "2-tails bootstrap", "1-tail bootstrap")
+res_cic_tot<-cbind(ATT_2 = c(res_total$ATT_2, res_total$ATT_2), sd = c(res_total$sd_ATT, res_total$sd_ATT), z_stat = c(res_total$z_stat, res_total$z_stat), p_value = c(res_total$p_value, res_total$p_value_o), CI_lower = c(res_total$CI_lower, res_total$CI_lower_o), CI_upper = c(res_total$CI_upper, res_total$CI_upper_o))
+rownames(res_cic_tot) <- c("2-tails", "1-tail")
 
 knitr::kable(res_cic_tot,digits=4, caption="Changes-in-changes for Total variable")
-
-res_quartils_tot<-cbind(ATT_2 = res_total$quartils, sd = res_total$sd_ATT_boot_q, z_stat = res_total$z_stat_boot_q, p_value =res_total$p_value_o_boot_q, CI_lower = res_total$CI_lower_o_boot_q, CI_upper = res_total$CI_upper_o_boot_q)
-rownames(res_quartils_tot) <- qq
-knitr::kable(res_quartils_tot,digits=4, caption="Changes-in-changes for quartiles - Total variable")
 ```
+
+```{r}
+bootstrap <- function(res_total, data1c, qq, var, n_boot = 500) {
+  quantiles <- c(res_total$quartils)
+  files_temps1 <- seq(1, nrow(data1c), by = 2)
+  for(i in 1:n_boot) {
+    submostra_temps1 <- sample(files_temps1, nrow(data1c)/2, replace = TRUE) 
+    submostra <- c(submostra_temps1, submostra_temps1+1)
+    data1csub <- data1c[submostra, ]
+    Y00 <- data1csub[data1csub$D == 0 & data1csub$Time == 1,var]
+    Y01 <- data1csub[data1csub$D == 0 & data1csub$Time == 2,var]
+    Y10 <- data1csub[data1csub$D == 1 & data1csub$Time == 1,var]
+    Y11 <- data1csub[data1csub$D == 1 & data1csub$Time == 2,var]
+
+    YS <- supp(c(Y00, Y01, Y10, Y11))  # Vector of distinct support points
+    YS01 <- supp(Y01)                 # Distinct support points for Y01
+  
+    f00 <- prob(Y00, YS)                # Vector of probabilities for Y00
+    f01 <- prob(Y01, YS)                # Vector of probabilities for Y01
+    f10 <- prob(Y10, YS)                # Vector of probabilities for Y10
+    f11 <- prob(Y11, YS)                # Vector of probabilities for Y11
+    est_con <- cic_con(f00,f01,f10,f11,qq,YS,YS01)
+    quantiles <- rbind(quantiles,est_con[-1])
+  }
+  
+  #calcular_pvalue <- function(x) {
+  #  mean(x[2:(n_boot+1)] >= x[1]) # Ho comparem amb l'1 perquè és on hem posat el valor estimat original per l'estimador del quantil concret
+  #}
+  #p_valor <- apply(quantiles,2, calcular_pvalue) # Calcula el pvalor per cada columna (cada quantil)
+  
+  return(list(quantiles = quantiles))
+}
+```
+
+```{r}
+p_values_total <- bootstrap(res_total, data1c, qq, "Total")
+
+# Resultats: 
+res_cic_tot<-cbind(ATT_2 = res_total$quartils, CI_lower = c(quantile(p_values_total$quantiles[,1], 0.05), quantile(p_values_total$quantiles[,2], 0.05), quantile(p_values_total$quantiles[,3], 0.05), quantile(p_values_total$quantiles[,4], 0.05), quantile(p_values_total$quantiles[,5], 0.05), quantile(p_values_total$quantiles[,6], 0.05)), CI_upper = c(quantile(p_values_total$quantiles[,1], 0.95), quantile(p_values_total$quantiles[,2], 0.95), quantile(p_values_total$quantiles[,3], 0.95), quantile(p_values_total$quantiles[,4], 0.95), quantile(p_values_total$quantiles[,5], 0.95), quantile(p_values_total$quantiles[,6], 0.95)))
+rownames(res_cic_tot) <- qq
+knitr::kable(res_cic_tot,digits=4, caption="Changes-in-changes for Total variable - quantiles")
+```
+
+
+```{r, out.width="60%", out.height="60%", fig.align = 'center'}
+hist(p_values_total$quantiles[,1], main = "quantil 0.25", xlab = "")
+hist(p_values_total$quantiles[,2], main = "quantil 0.5", xlab = "")
+hist(p_values_total$quantiles[,3], main = "quantil 0.75", xlab = "")
+hist(p_values_total$quantiles[,4], main = "quantil 0.9", xlab = "")
+hist(p_values_total$quantiles[,5], main = "quantil 0.95", xlab = "")
+hist(p_values_total$quantiles[,6], main = "quantil 0.99", xlab = "")
+```
+
+
 
 #### Variable Night
 
 ```{r}
-Y00 <- data1c[data1c$D == 0 & data1c$Time == 2,"Night"]
+Y00 <- data1c[data1c$D == 0 & data1c$Time == 1,"Night"]
 Y01 <- data1c[data1c$D == 0 & data1c$Time == 2,"Night"]
 Y10 <- data1c[data1c$D == 1 & data1c$Time == 1,"Night"]
-Y11 <- data1c[data1c$D == 1 & data1c$Time == 1,"Night"]
+Y11 <- data1c[data1c$D == 1 & data1c$Time == 2,"Night"]
 qq=c(0.25,0.5,0.75,0.9,0.95,0.99)
 
 res_total <- nonparam(Y00, Y01, Y10, Y11, qq)
 
 # Resultats: 
-res_cic_nig<-cbind(ATT_2 = c(res_total$ATT_2, res_total$ATT_2, res_total$ATT_2, res_total$ATT_2), sd = c(res_total$sd_ATT, res_total$sd_ATT, res_total$sd_ATT_boot, res_total$sd_ATT_boot), z_stat = c(res_total$z_stat, res_total$z_stat, res_total$z_stat_boot, res_total$z_stat_boot), p_value = c(res_total$p_value, res_total$p_value_o, res_total$p_value_boot, res_total$p_value_o_boot), CI_lower = c(res_total$CI_lower, res_total$CI_lower_o,res_total$CI_lower_boot, res_total$CI_lower_o_boot), CI_upper = c(res_total$CI_upper, res_total$CI_upper_o,res_total$CI_upper_boot, res_total$CI_upper_o_boot))
-rownames(res_cic_nig) <- c("2-tails", "1-tail", "2-tails bootstrap", "1-tail bootstrap")
+res_cic_nig<-cbind(ATT_2 = c(res_total$ATT_2, res_total$ATT_2), sd = c(res_total$sd_ATT, res_total$sd_ATT), z_stat = c(res_total$z_stat, res_total$z_stat), p_value = c(res_total$p_value, res_total$p_value_o), CI_lower = c(res_total$CI_lower, res_total$CI_lower_o), CI_upper = c(res_total$CI_upper, res_total$CI_upper_o))
+rownames(res_cic_nig) <- c("2-tails", "1-tail")
 
 knitr::kable(res_cic_nig,digits=4, caption="Changes-in-changes for Night variable")
-
-res_quartils_nig<-cbind(ATT_2 = res_total$quartils, sd = res_total$sd_ATT_boot_q, z_stat = res_total$z_stat_boot_q, p_value =res_total$p_value_o_boot_q, CI_lower = res_total$CI_lower_o_boot_q, CI_upper = res_total$CI_upper_o_boot_q)
-rownames(res_quartils_nig) <- qq
-knitr::kable(res_quartils_nig,digits=4, caption="Changes-in-changes for quartiles - Night variable")
 ```
+
+```{r}
+p_values_night <- bootstrap(res_total, data1c, qq, "Night")
+
+# Resultats: 
+res_cic_tot<-cbind(ATT_2 = res_total$quartils, CI_lower = c(quantile(p_values_night$quantiles[,1], 0.05), quantile(p_values_night$quantiles[,2], 0.05), quantile(p_values_night$quantiles[,3], 0.05), quantile(p_values_night$quantiles[,4], 0.05), quantile(p_values_night$quantiles[,5], 0.05), quantile(p_values_night$quantiles[,6], 0.05)), CI_upper = c(quantile(p_values_night$quantiles[,1], 0.95), quantile(p_values_night$quantiles[,2], 0.95), quantile(p_values_night$quantiles[,3], 0.95), quantile(p_values_night$quantiles[,4], 0.95), quantile(p_values_night$quantiles[,5], 0.95), quantile(p_values_night$quantiles[,6], 0.95)))
+rownames(res_cic_tot) <- qq
+knitr::kable(res_cic_tot,digits=4, caption="Changes-in-changes for Night variable - quantiles")
+```
+
+```{r, out.width="60%", out.height="60%", fig.align = 'center'}
+hist(p_values_night$quantiles[,1], main = "quantil 0.25", xlab = "")
+hist(p_values_night$quantiles[,2], main = "quantil 0.5", xlab = "")
+hist(p_values_night$quantiles[,3], main = "quantil 0.75", xlab = "")
+hist(p_values_night$quantiles[,4], main = "quantil 0.9", xlab = "")
+hist(p_values_night$quantiles[,5], main = "quantil 0.95", xlab = "")
+hist(p_values_night$quantiles[,6], main = "quantil 0.99", xlab = "")
+```
+
 
 #### Variable Speed
 
 ```{r}
-Y00 <- data1c[data1c$D == 0 & data1c$Time == 2,"Speed"]
+Y00 <- data1c[data1c$D == 0 & data1c$Time == 1,"Speed"]
 Y01 <- data1c[data1c$D == 0 & data1c$Time == 2,"Speed"]
 Y10 <- data1c[data1c$D == 1 & data1c$Time == 1,"Speed"]
-Y11 <- data1c[data1c$D == 1 & data1c$Time == 1,"Speed"]
+Y11 <- data1c[data1c$D == 1 & data1c$Time == 2,"Speed"]
 qq=c(0.25,0.5,0.75,0.9,0.95,0.99)
 
 res_total <- nonparam(Y00, Y01, Y10, Y11, qq)
 
 # Resultats: 
-res_cic_spe<-cbind(ATT_2 = c(res_total$ATT_2, res_total$ATT_2, res_total$ATT_2, res_total$ATT_2), sd = c(res_total$sd_ATT, res_total$sd_ATT, res_total$sd_ATT_boot, res_total$sd_ATT_boot), z_stat = c(res_total$z_stat, res_total$z_stat, res_total$z_stat_boot, res_total$z_stat_boot), p_value = c(res_total$p_value, res_total$p_value_o, res_total$p_value_boot, res_total$p_value_o_boot), CI_lower = c(res_total$CI_lower, res_total$CI_lower_o,res_total$CI_lower_boot, res_total$CI_lower_o_boot), CI_upper = c(res_total$CI_upper, res_total$CI_upper_o,res_total$CI_upper_boot, res_total$CI_upper_o_boot))
-rownames(res_cic_spe) <- c("2-tails", "1-tail", "2-tails bootstrap", "1-tail bootstrap")
+res_cic_spe<-cbind(ATT_2 = c(res_total$ATT_2, res_total$ATT_2), sd = c(res_total$sd_ATT, res_total$sd_ATT), z_stat = c(res_total$z_stat, res_total$z_stat), p_value = c(res_total$p_value, res_total$p_value_o ), CI_lower = c(res_total$CI_lower, res_total$CI_lower_o), CI_upper = c(res_total$CI_upper, res_total$CI_upper_o))
+rownames(res_cic_spe) <- c("2-tails", "1-tail")
 
 knitr::kable(res_cic_spe,digits=4, caption="Changes-in-changes for Speed variable")
+```
 
-res_quartils_spe<-cbind(ATT_2 = res_total$quartils, sd = res_total$sd_ATT_boot_q, z_stat = res_total$z_stat_boot_q, p_value =res_total$p_value_o_boot_q, CI_lower = res_total$CI_lower_o_boot_q, CI_upper = res_total$CI_upper_o_boot_q)
-rownames(res_quartils_spe) <- qq
-knitr::kable(res_quartils_spe,digits=4, caption="Changes-in-changes for quartiles - Speed variable")
+
+```{r}
+p_values_speed <- bootstrap(res_total, data1c, qq, "Speed")
+
+# Resultats: 
+res_cic_tot<-cbind(ATT_2 = res_total$quartils, CI_lower = c(quantile(p_values_speed$quantiles[,1], 0.05), quantile(p_values_speed$quantiles[,2], 0.05), quantile(p_values_speed$quantiles[,3], 0.05), quantile(p_values_speed$quantiles[,4], 0.05), quantile(p_values_speed$quantiles[,5], 0.05), quantile(p_values_speed$quantiles[,6], 0.05)), CI_upper = c(quantile(p_values_speed$quantiles[,1], 0.95), quantile(p_values_speed$quantiles[,2], 0.95), quantile(p_values_speed$quantiles[,3], 0.95), quantile(p_values_speed$quantiles[,4], 0.95), quantile(p_values_speed$quantiles[,5], 0.95), quantile(p_values_speed$quantiles[,6], 0.95)))
+rownames(res_cic_tot) <- qq
+knitr::kable(res_cic_tot,digits=4, caption="Changes-in-changes for Speed variable - quantiles")
+```
+
+```{r, out.width="60%", out.height="60%", fig.align = 'center'}
+hist(p_values_speed$quantiles[,1], main = "quantil 0.25", xlab = "")
+hist(p_values_speed$quantiles[,2], main = "quantil 0.5", xlab = "")
+hist(p_values_speed$quantiles[,3], main = "quantil 0.75", xlab = "")
+hist(p_values_speed$quantiles[,4], main = "quantil 0.9", xlab = "")
+hist(p_values_speed$quantiles[,5], main = "quantil 0.95", xlab = "")
+hist(p_values_speed$quantiles[,6], main = "quantil 0.99", xlab = "")
 ```
 
 #### Variable Urban
 
 ```{r}
-Y00 <- data1c[data1c$D == 0 & data1c$Time == 2,"Urban"]
+Y00 <- data1c[data1c$D == 0 & data1c$Time == 1,"Urban"]
 Y01 <- data1c[data1c$D == 0 & data1c$Time == 2,"Urban"]
 Y10 <- data1c[data1c$D == 1 & data1c$Time == 1,"Urban"]
-Y11 <- data1c[data1c$D == 1 & data1c$Time == 1,"Urban"]
+Y11 <- data1c[data1c$D == 1 & data1c$Time == 2,"Urban"]
 qq=c(0.25,0.5,0.75,0.9,0.95,0.99)
 
 res_total <- nonparam(Y00, Y01, Y10, Y11, qq)
 
 # Resultats: 
-res_cic_urb<-cbind(ATT_2 = c(res_total$ATT_2, res_total$ATT_2, res_total$ATT_2, res_total$ATT_2), sd = c(res_total$sd_ATT, res_total$sd_ATT, res_total$sd_ATT_boot, res_total$sd_ATT_boot), z_stat = c(res_total$z_stat, res_total$z_stat, res_total$z_stat_boot, res_total$z_stat_boot), p_value = c(res_total$p_value, res_total$p_value_o, res_total$p_value_boot, res_total$p_value_o_boot), CI_lower = c(res_total$CI_lower, res_total$CI_lower_o,res_total$CI_lower_boot, res_total$CI_lower_o_boot), CI_upper = c(res_total$CI_upper, res_total$CI_upper_o,res_total$CI_upper_boot, res_total$CI_upper_o_boot))
-rownames(res_cic_urb) <- c("2-tails", "1-tail", "2-tails bootstrap", "1-tail bootstrap")
+res_cic_urb<-cbind(ATT_2 = c(res_total$ATT_2, res_total$ATT_2), sd = c(res_total$sd_ATT, res_total$sd_ATT), z_stat = c(res_total$z_stat, res_total$z_stat), p_value = c(res_total$p_value, res_total$p_value_o), CI_lower = c(res_total$CI_lower, res_total$CI_lower_o), CI_upper = c(res_total$CI_upper, res_total$CI_upper_o))
+rownames(res_cic_urb) <- c("2-tails", "1-tail")
 knitr::kable(res_cic_urb,digits=4, caption="Changes-in-changes for Urban variable")
-
-res_quartils_urb<-cbind(ATT_2 = res_total$quartils, sd = res_total$sd_ATT_boot_q, z_stat = res_total$z_stat_boot_q, p_value =res_total$p_value_o_boot_q, CI_lower = res_total$CI_lower_o_boot_q, CI_upper = res_total$CI_upper_o_boot_q)
-rownames(res_quartils_urb) <- qq
-knitr::kable(res_quartils_urb,digits=4, caption="Changes-in-changes for quartiles - Urban variable")
 ```
 
+```{r}
+p_values_urban <- bootstrap(res_total, data1c, qq, "Urban")
+
+# Resultats: 
+res_cic_tot<-cbind(ATT_2 = res_total$quartils, CI_lower = c(quantile(p_values_urban$quantiles[,1], 0.05), quantile(p_values_urban$quantiles[,2], 0.05), quantile(p_values_urban$quantiles[,3], 0.05), quantile(p_values_urban$quantiles[,4], 0.05), quantile(p_values_urban$quantiles[,5], 0.05), quantile(p_values_urban$quantiles[,6], 0.05)), CI_upper = c(quantile(p_values_urban$quantiles[,1], 0.95), quantile(p_values_urban$quantiles[,2], 0.95), quantile(p_values_urban$quantiles[,3], 0.95), quantile(p_values_urban$quantiles[,4], 0.95), quantile(p_values_urban$quantiles[,5], 0.95), quantile(p_values_urban$quantiles[,6], 0.95)))
+rownames(res_cic_tot) <- qq
+knitr::kable(res_cic_tot,digits=4, caption="Changes-in-changes for Urban variable - quantiles")
+```
+
+```{r, out.width="60%", out.height="60%", fig.align = 'center'}
+hist(p_values_urban$quantiles[,1], main = "quantil 0.25", xlab = "")
+hist(p_values_urban$quantiles[,2], main = "quantil 0.5", xlab = "")
+hist(p_values_urban$quantiles[,3], main = "quantil 0.75", xlab = "")
+hist(p_values_urban$quantiles[,4], main = "quantil 0.9", xlab = "")
+hist(p_values_urban$quantiles[,5], main = "quantil 0.95", xlab = "")
+hist(p_values_urban$quantiles[,6], main = "quantil 0.99", xlab = "")
+```
 
 ## Models amb covariables canviants en el temps
 
